@@ -167,6 +167,7 @@ def process_tex_file():
                 elif line_type is LineType.COMMAND or line_type is LineType.IMAGE or line_type is LineType.COMMENT:
                     new_tex += line + "\n"
                 elif line_type is LineType.PARAGRAPH:
+
                     first_paragraph_flag = 1
                     to_ignore, to_analyze = separate_latex_commands(line)
                     for key, value in to_analyze.items():

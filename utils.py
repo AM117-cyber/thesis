@@ -16,6 +16,12 @@ class LineType(Enum):
     IGNORE = auto()
     COMMENT = auto()
 
+class CommandType(Enum):
+
+    MATH = auto()
+    CLOSE_BRACE = auto()
+    COMMAND = auto()
+
 class NoteType(Enum):
     MISSING_INTRO = "Una cosa no puede empezar con una subcosa"
     CHAPTER_MISSING_INTRO = "El capítulo debe tener un párrafo introductorio antes de una sección."
@@ -340,166 +346,379 @@ def process_section_chapter_declaration(lines, i, weasels, spanglish):
     
     return line
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+#     # Helper to add span to the correct list
+# def add_span(span, is_process):
+#         if span[0] >= span[1]:
+#             return
+#         (process_spans if is_process else ignore_spans).append(span)
+
+def find_balance_symbol(start_symbol, end_symbol, text, position):
+    depth = 1
+    while position < len(text) and depth > 0:
+        character = text[position]
+        if character is start_symbol:
+            depth +=1
+        if character is end_symbol:
+            depth -= 1
+        position +=1
+    return position
+
+def get_first_non_empty_char(text, position):
+    character = text[position]
+    init_position = position
+    while character == " " and position < len(text):
+        position+=1
+        character = text[position]
+    return position, character
+
+def call_optional_method(text, position, envs, to_ignore, to_analyze):
+    '''It receives a list of envs ([], (), {}, etc) that could follow a command in a certain order optionally and 
+        if it finds them it adds them to ignore, while adding to analyze the spaces between them.
+        This method is only for commands to ignore'''
+    env_index = 0
+    while env_index < len(envs):
+        character = text[position]
+        init_position = position
+        while character == " ":
+            position+=1
+            character = text[position]
+        if position != init_position:
+            to_analyze[init_position, position] = text[init_position: position]
+        while env_index < len(envs):
+            if character == envs[env_index][0]:
+                end = find_balance_symbol(envs[env_index][0], envs[env_index][1], text, position+1)
+                to_ignore[position, end] = text[position: end]
+                position = end
+                env_index += 1
+                break
+            env_index += 1
+    return position
+
+
+def commands_to_consider_method(command, text, position, matches, index, to_ignore, to_analyze):
+    '''It receives a dictionay of envs {[], (), {}, etc} in which each env is assign True or False to identify if the content of them should be ignored.
+        When it finds them (we assume all the envs appear) it adds them to ignore or analyze accordingly, while adding to analyze the spaces between them.
+        This method is only for commands to analyze'''
+
+    # by default I will consider the content of first {} to analyze
+
+    #textbf', 'hl','comment', 'textcolor
+    if command == "comment":
+        # consider first {} and ignore second {}
+        new_position, character = get_first_non_empty_char(text, position)
+        if position != new_position:
+            to_analyze[position,new_position] = text[position:new_position]
+            position = new_position
+        if character != '{':
+            return position, index
+
+        to_ignore[position,position] = '{'
+        position +=1
+        position = process_command_arg1(1, position, matches, index, text, to_ignore, to_analyze)
+        # ignoring second {}
+        position = call_optional_method(text, position, ['{}'], to_ignore, to_analyze)
+        return position, index
+    if command == "textcolor":
+        # ignore first {} and consider second {}
+        position = call_optional_method(text, position, ['{}'], to_ignore, to_analyze)
+        new_position, character = get_first_non_empty_char(text, position)
+        if position != new_position:
+            to_analyze[position,new_position] = text[position:new_position]
+            position = new_position
+        if character != '{':
+            return position, index
+
+        to_ignore[position,position] = '{'
+        position +=1
+        position = process_command_arg1(1, position, matches, index, text,to_ignore, to_analyze)
+        return position, index
+    else:
+        # default
+        new_position, character = get_first_non_empty_char(text, position)
+        if position != new_position:
+            to_analyze[position,new_position] = text[position:new_position]
+            position = new_position
+        if character != '{':
+            return position, index
+
+        to_ignore[position,position] = '{'
+        position +=1
+        position = process_command_arg1(1, position, matches, index, text,to_ignore, to_analyze)
+        return position, index
+
+
+
+
+
+
+    # # Step 1: mark all math spans as ignored
+    # for m in math_pattern.finditer(text):
+    #     add_span(m.span(), False)
+
+    # Step 2: mark all command spans
 def separate_latex_commands(text):
 
-    '''Receives a paragraph that might contain latex commands or mathematic elements, which it separates into a dict with spans to ignore and dict with span to analyze'''
+    to_ignore = {}
+    to_analyze = {}
 
-
-    # Sub-pattern to extract parts from a LaTeX command
-    command_decomposer = re.compile(
-        r"""
-        \\(?P<name>[a-zA-Z]+)\*?                # Command name
-        \s*
-        (?:\[(?P<options>[^\]]*)\])?            # Optional options
-        \s*
-        (?:\((?P<label>[^\)]*)\))?              # Optional label
-        \s*
-        (?:\{(?P<content>[^{}]*)\})?             # Optional {content}
-        """,
+    # Matches LaTeX commands like \command[opt](label){arg}{mod1}{mod2}
+    command_pattern = re.compile(
+        r'''\\[a-zA-Z@]+
+        ''',
         re.VERBOSE
     )
 
-
-
-    allowed_content_spans = []
-    ignored_spans = []
-    words_with_positions = []
-
-    # Step 1: Process allowed LaTeX commands (e.g., \textbf{}, \hl{})
-    # latex_pattern = re.compile(r'\\([a-zA-Z]+)\*?(?:\[[^\]]*\])?{([^}]*)}')
-    latex_pattern = re.compile(
-        r"""
-        (?P<command>
-            \\[a-zA-Z]+\*?                      # Command name
-            \s*                                 # Optional space
-            (?:\[[^\]]*\])?                     # Optional [options]
-            \s*
-            (?:\([^\)]*\))?                     # Optional (label)
-            \s*
-            \{[^{}]*\}
-            |
-            \\[a-zA-Z]+\*?                      # Command name
-            \s*                                 # Optional space
-            (?:\[[^\]]*\])?                     # Optional [options]
-            \s*
-            (?:\([^\)]*\))?                     # Optional (label)
-        )
-        |
-        (?P<math>
-            \$\$.*?\$\$                         # Display math with $$
-            |
-            \$[^$]+\$                           # Inline math with $
-            |
-            \\\[.*?\\\]                         # Display math with \[...\]
-            |
-            \\\(.*?\\\)                         # Inline math with \( ... \)
-        )
-        """,
-        re.VERBOSE | re.DOTALL
+    # Matches math environments
+    math_pattern = re.compile(
+        r'(?P<math>\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\))',
+        re.DOTALL
     )
 
-    allowed_commands = {'textbf', 'hl', 'colchunk','comment'}
-    current_pos = 0
-    cleaned_parts = []
+    brace_end = re.compile(r'}')
 
-    parts_to_ignore = {}
-    parts_to_analyze = {}
+    matches = {}
+    for m in command_pattern.finditer(text):
+        matches[m.span()] = [CommandType.COMMAND]
+    for m in math_pattern.finditer(text):
+        matches[m.span()] = [CommandType.MATH]
+    for m in brace_end.finditer(text):
+        matches[m.span()] = [CommandType.CLOSE_BRACE]
+    matches = sorted(matches.items(), key=lambda x: x[0][0])
+    process_command_arg1(0,0,matches, 0, text, to_ignore, to_analyze)
+    # print(to_analyze)
+    # print("\n\n")
+    # print(to_ignore)
+    return to_ignore, to_analyze
 
-    for match in latex_pattern.finditer(text):
-        start, end = match.span()
 
-        if match.group("command"):
-            
-            cmd_text = match.group("command")
-            
-            submatch = command_decomposer.match(cmd_text)
-
-            if submatch:
-                command = submatch.group("name")
-                argument = submatch.group("content")
+def process_command_arg1(depth, curr_pos, matches, index, text, to_ignore, to_analyze):
+    commands_to_consider = ['textbf', 'hl','comment', 'textcolor']
+    matches = list(matches) 
+    # matches elements are in the form: [[start, end], type]
+    index = index
+    while index < len(matches):
+        match = matches[index]
+        # print(f'MATCH FOUND:{match[1]}')
+        if match[0][0] < curr_pos:
+            index +=1
+            continue
+        valid_text = text[curr_pos: match[0][0]]
+        if valid_text != "":
+            to_analyze[curr_pos, match[0][0]] = valid_text
+        curr_pos = match[0][1]
+        if match[1][0] is CommandType.MATH:
+            to_ignore[match[0][0], match[0][1]] = text[match[0][0]: match[0][1]] # fix math
+        if match[1][0] is CommandType.CLOSE_BRACE:
+            if depth > 0:
+                depth -= 1
+                to_ignore[match[0][0], match[0][1]] = text[match[0][0]: match[0][1]]
+                if depth <= 0:
+                    return curr_pos
+        print(match[1])
+        if match[1][0] is CommandType.COMMAND:
+            command_name = text[match[0][0]+1:match[0][1]] # +1 to skip \
+            to_ignore[match[0][0], match[0][1]] = text[match[0][0]: match[0][1]]
+            if command_name in commands_to_consider:
+                curr_pos, index = commands_to_consider_method(command_name, text, curr_pos, matches, index, to_ignore, to_analyze)
             else:
-                print("Unparsed command:", cmd_text)
-                command = "unrecognized"
-        else: # it's math, so we can get the length of it directly
-            command = "math"
-        if command in allowed_commands:
-            # Calculate content positions in original text
-            prefix_len = len(match.group(0)) - len(argument) - 1
-            content_start = start + prefix_len
-            content_end = end - 1
-
-            # Mark command syntax as ignored
-            ignored_spans.extend([(start, content_start), (content_end, end)])
-            allowed_content_spans.append((content_start, content_end))
-
-            # Process content words
-            doc = nlp(argument)
-            for token in doc:
-                if token.is_alpha and len(token.text) > 2:
-                    word_start = content_start + token.idx
-                    word_end = word_start + len(token.text)
-                    words_with_positions.append((word_start, word_end, token.text.lower()))
-
-            # Build cleaned text for sentence segmentation
-            cleaned_parts.extend([
-                text[current_pos:start],
-                ' ' * (content_start - start),  # Replace command prefix
-                argument,
-                ' ' * (end - content_end - 1)   # Replace command suffix
-            ])
-            current_pos = end
-        else:
-            # Ignore other commands entirely
-            ignored_spans.append((start, end))
-            cleaned_parts.append(text[current_pos:start] + ' ' * (end - start))
-            current_pos = end
+                curr_pos = call_optional_method(text, match[0][1], ['[]','()','{}'], to_ignore, to_analyze)
+                 
+        index +=1
+    if curr_pos < len(text):
+        to_analyze[curr_pos, len(text)] = text[curr_pos: len(text)]
+              
 
 
 
-    # Step: Extend ignored_spans with trailing {...} blocks if they appear after an unallowed command
 
-    # This is necessary because with the regex I can't find a {} inside another one, so \h1{\textbf{jj}} would cause problems for example
-    i = 0
-    while i < len(ignored_spans):
-        span_start, span_end = ignored_spans[i]
 
-        # Skip whitespace to look for the next non-space character
-        j = span_end
-        while j < len(text) and text[j].isspace():
-            j += 1
 
-        # Check if next char is opening brace
-        if j < len(text) and text[j] == '{':
-            brace_start = j
-            depth = 1
-            j += 1
-            while j < len(text) and depth > 0:
-                if text[j] == '{':
-                    depth += 1
-                elif text[j] == '}':
-                    depth -= 1
-                j += 1
 
-            if depth == 0:
-                brace_end = j
-                ignored_spans.append((brace_start, brace_end))
 
-        i += 1
-    all_ignored = sorted(ignored_spans)
+
+
+
+
+
+
+
+
+
+
+# def separate_latex_commands_with_errors(text):
+
+#     '''Receives a paragraph that might contain latex commands or mathematic elements, which it separates into a dict with spans to ignore and dict with span to analyze'''
+
+
+#     # Sub-pattern to extract parts from a LaTeX command
+#     command_decomposer = re.compile(
+#         r"""
+#         \\(?P<name>[a-zA-Z]+)\*?                # Command name
+#         \s*
+#         (?:\[(?P<options>[^\]]*)\])?            # Optional options
+#         \s*
+#         (?:\((?P<label>[^\)]*)\))?              # Optional label
+#         \s*
+#         (?:\{(?P<content>[^{}]*)\})?             # Optional {content}
+#         """,
+#         re.VERBOSE
+#     )
+
+
+
+#     allowed_content_spans = []
+#     ignored_spans = []
+#     words_with_positions = []
+
+#     # Step 1: Process allowed LaTeX commands (e.g., \textbf{}, \hl{})
+#     # latex_pattern = re.compile(r'\\([a-zA-Z]+)\*?(?:\[[^\]]*\])?{([^}]*)}')
+#     latex_pattern = re.compile(
+#         r"""
+#         (?P<command>
+#             \\[a-zA-Z]+\*?                      # Command name
+#             \s*                                 # Optional space
+#             (?:\[[^\]]*\])?                     # Optional [options]
+#             \s*
+#             (?:\([^\)]*\))?                     # Optional (label)
+#             \s*
+#             (?:
+#                 \{                              # Either has {
+#                     [^{}]*                      #   content inside
+#                 \}
+#                 |                               # OR
+#                 (?!\s*[a-zA-Z])                # Not followed by a letter
+#                 (?=\s*[^a-zA-Z\s]|\s*$)        # Must be followed by non-letter or EOL
+#             )
+#         )
+#         |
+#         (?P<math>
+#             \$\$.*?\$\$                         # Display math with $$
+#             |
+#             \$[^$]+\$                           # Inline math with $
+#             |
+#             \\\[.*?\\\]                         # Display math with \[...\]
+#             |
+#             \\\(.*?\\\)                         # Inline math with \( ... \)
+#         )
+#         """,
+#         re.VERBOSE | re.DOTALL
+#     )
+
+#     allowed_commands = {'textbf', 'hl', 'colchunk','comment'}
+#     current_pos = 0
+#     cleaned_parts = []
+
+#     parts_to_ignore = {}
+#     parts_to_analyze = {}
+
+#     for match in latex_pattern.finditer(text):
+#         start, end = match.span()
+
+#         if match.group("command"):
+            
+#             cmd_text = match.group("command")
+            
+#             submatch = command_decomposer.match(cmd_text)
+
+#             if submatch:
+#                 command = submatch.group("name")
+#                 argument = submatch.group("content")
+#             else:
+#                 print("Unparsed command:", cmd_text)
+#                 command = "unrecognized"
+#         else: # it's math, so we can get the length of it directly
+#             command = "math"
+#         if command in allowed_commands:
+#             # Calculate content positions in original text
+#             prefix_len = len(match.group(0)) - len(argument) - 1
+#             content_start = start + prefix_len
+#             content_end = end - 1
+
+#             # Mark command syntax as ignored
+#             ignored_spans.extend([(start, content_start), (content_end, end)])
+#             allowed_content_spans.append((content_start, content_end))
+
+#             # Process content words
+#             doc = nlp(argument)
+#             for token in doc:
+#                 if token.is_alpha and len(token.text) > 2:
+#                     word_start = content_start + token.idx
+#                     word_end = word_start + len(token.text)
+#                     words_with_positions.append((word_start, word_end, token.text.lower()))
+
+#             # Build cleaned text for sentence segmentation
+#             cleaned_parts.extend([
+#                 text[current_pos:start],
+#                 ' ' * (content_start - start),  # Replace command prefix
+#                 argument,
+#                 ' ' * (end - content_end - 1)   # Replace command suffix
+#             ])
+#             current_pos = end
+#         else:
+#             # Ignore other commands entirely
+#             ignored_spans.append((start, end))
+#             cleaned_parts.append(text[current_pos:start] + ' ' * (end - start))
+#             current_pos = end
+
+
+
+#     # Step: Extend ignored_spans with trailing {...} blocks if they appear after an unallowed command
+
+#     # This is necessary because with the regex I can't find a {} inside another one, so \h1{\textbf{jj}} would cause problems for example
+#     i = 0
+#     while i < len(ignored_spans):
+#         span_start, span_end = ignored_spans[i]
+
+#         # Skip whitespace to look for the next non-space character
+#         j = span_end
+#         while j < len(text) and text[j].isspace():
+#             j += 1
+
+#         # Check if next char is opening brace
+#         if j < len(text) and text[j] == '{':
+#             brace_start = j
+#             depth = 1
+#             j += 1
+#             while j < len(text) and depth > 0:
+#                 if text[j] == '{':
+#                     depth += 1
+#                 elif text[j] == '}':
+#                     depth -= 1
+#                 j += 1
+
+#             if depth == 0:
+#                 brace_end = j
+#                 ignored_spans.append((brace_start, brace_end))
+
+#         i += 1
+#     all_ignored = sorted(ignored_spans)
     
-    index = 0
-    ignored_index = 0
-    while index < len(text):
-        if ignored_index < len(all_ignored):
-            curr_start, curr_end = all_ignored[ignored_index]
-        else:
-            # write what is remaining of the text and break
-            parts_to_analyze[index, len(text)] = text[index:len(text)]
-            break
-        if index < curr_start:
-            parts_to_analyze[index, curr_start] = text[index:curr_start]
+#     index = 0
+#     ignored_index = 0
+#     while index < len(text):
+#         if ignored_index < len(all_ignored):
+#             curr_start, curr_end = all_ignored[ignored_index]
+#         else:
+#             # write what is remaining of the text and break
+#             parts_to_analyze[index, len(text)] = text[index:len(text)]
+#             break
+#         if index < curr_start:
+#             parts_to_analyze[index, curr_start] = text[index:curr_start]
 
-        parts_to_ignore[curr_start, curr_end] = text[curr_start:curr_end]
-        ignored_index+=1
-        index = curr_end
-    return parts_to_ignore, parts_to_analyze
+#         parts_to_ignore[curr_start, curr_end] = text[curr_start:curr_end]
+#         ignored_index+=1
+#         index = curr_end
+#     return parts_to_ignore, parts_to_analyze

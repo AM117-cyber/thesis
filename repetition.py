@@ -369,7 +369,8 @@ def highlight_repeated_words_window(text, color_list, window_size=100, ignore_wo
         
         if len(sentence_words) > long_sentence_limit:
             # Wrap the entire sentence with a custom highlight (e.g., tcolorbox or custom macro)
-            sentence = f"\\colorbox{{Thistle}}{{{sentence.strip()}}} "
+            command = "{\color{Thistle} ["
+            sentence = command + f"{{{sentence}}} " + "$^{largo}$]}"
         highlighted_sentences.append(sentence)
 
     # Reconstruct the text with long sentences marked
