@@ -19,7 +19,7 @@ weasels = [
     "en gran medida", "enorme", "minúsculo", "excelente", "significativo", 
     "significativa", "significativamente", "sustancial", "sustancialmente", 
     "claramente", "vasto", "relativamente", "completamente","unos", "unas", 
-    "cualquier", "alguno", "alguna", "algunos", "algunas", 
+    "cualquier", "alguno", "alguna", "algunos", "algunas", "bueno", "malo", "regular",
     "supuestamente", "aparentemente", "algo", "alguien", "básicamente", 
     "casi", "cerca de", "cosa", "demasiado", "en cierto modo", 
     "en cierto sentido", "en gran medida", "en la mayoría de los casos", 
