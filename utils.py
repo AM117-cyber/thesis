@@ -74,13 +74,13 @@ def detect_passive_voice(text):
 
 def detectar_primera_segunda_persona_y_adjetivos(texto):
     doc = nlp(texto)
-    spans = []
+    spans = {}
     pronouns = {"yo", "tú", "vos", "usted", "ustedes", "nosotros", "nosotras", "vosotros", "vosotras", "me"}
     adj_spans = []
     for i, token in enumerate(doc):
         # Always highlight personal pronouns
         if token.text.lower() in pronouns and token.pos_ == "PRON":
-            spans.append((token.idx, token.idx + len(token.text)))
+            spans[token.idx, token.idx + len(token.text)] = "Person"
         
         # Check for compound verbs (aux + participle) in 1st/2nd person
         if token.pos_ == "AUX" and ("Person=1" in token.morph or "Person=2" in token.morph):
@@ -90,19 +90,47 @@ def detectar_primera_segunda_persona_y_adjetivos(texto):
                 if (next_token.pos_ == "VERB" and "VerbForm=Part" in next_token.morph):
                     span_start = token.idx
                     span_end = next_token.idx + len(next_token.text)
-                    spans.append((span_start, span_end))
+                    spans[span_start, span_end] = "Person"
                     break
-            spans.append((token.idx, token.idx + len(token.text)))
+            spans[token.idx, token.idx + len(token.text)] = "Person"
         
         # Check for simple verbs in 1st/2nd person
         elif token.pos_ == "VERB" and ("Person=1" in token.morph or "Person=2" in token.morph):
-            spans.append((token.idx, token.idx + len(token.text)))
+            spans[token.idx, token.idx + len(token.text)] = "Person"
         
         # Check for adjectives
         elif token.pos_ == "ADJ":
-            adj_spans.append((token.idx, token.idx + len(token.text)))
+            spans[token.idx, token.idx + len(token.text)] = "ADJ"
     
-    return spans, adj_spans
+    return spans
+
+
+def mark_first_second_person_and_adject(doc_content:str) ->str:
+    # Step 2:[] Highlight first/second person verbs, pronouns, and adjectives
+    spans = detectar_primera_segunda_persona_y_adjetivos(doc_content)
+    # Sort spans by start position to process them in order
+    spans = sorted(spans.items(), key=lambda x: x[0][0])
+    offset = 0
+    index = 0
+    while index < len(spans):
+        curr_span = spans[index]
+        start = curr_span[0][0]
+        end = curr_span[0][1]
+        real_start = start + offset
+        real_end = end + offset
+        # Skip if this span is already inside a previous highlight
+        # if any(s <= real_start and real_end <= e for (s, e) in spans.keys() if s < start):
+        #     continue
+        original = doc_content[real_start:real_end]
+        comment_text = "{Escribir en 3ra persona.} "
+        if curr_span[1] == "ADJ":
+            comment_text = "{Adjetivo.} "
+        wrapped = '\comment {'+original+'}' + comment_text
+        doc_content = doc_content[:real_start] + wrapped + doc_content[real_end:]
+        offset += len(wrapped) - (end - start)
+        index += 1
+
+    return doc_content
 
 def mark_passive_voice(doc_content:str) -> str:
     # Step 1: Highlight passive voice (ser + participle) and returns the text highlighted
@@ -117,33 +145,6 @@ def mark_passive_voice(doc_content:str) -> str:
         offset += len(wrapped) - (end - start)
     return doc_content
 
-def mark_first_second_person_and_adject(doc_content:str) ->str:
-    # Step 2:[] Highlight first/second person verbs, pronouns, and adjectives
-    persona_spans, adj_spans = detectar_primera_segunda_persona_y_adjetivos(doc_content)
-    # Sort spans by start position to process them in order
-    persona_spans.sort()
-    offset = 0
-    for start, end in persona_spans:
-        real_start = start + offset
-        real_end = end + offset
-        # Skip if this span is already inside a previous highlight
-        if any(s <= real_start and real_end <= e for (s, e) in persona_spans if s < start):
-            continue
-        original = doc_content[real_start:real_end]
-        wrapped = '\comment {'+original+'}{Escribir en 3ra persona.} '
-        doc_content = doc_content[:real_start] + wrapped + doc_content[real_end:]
-        offset += len(wrapped) - (end - start)
-    for start, end in adj_spans:
-        real_start = start + offset
-        real_end = end + offset
-        # Skip if this span is already inside a previous highlight
-        if any(s <= real_start and real_end <= e for (s, e) in adj_spans if s < start):
-            continue
-        original = doc_content[real_start:real_end]
-        wrapped = '\comment {'+original+'}{Adjetivo.} '
-        doc_content = doc_content[:real_start] + wrapped + doc_content[real_end:]
-        offset += len(wrapped) - (end - start)
-    return doc_content
 
 def mark_weasel_spanglish(weasel_words, spanglish_words, doc_content:str) -> str:
     

@@ -73,38 +73,33 @@ ignore_for_repetition = [
 
 def process_tex_file():
     """Processes a LaTeX file to find errors in its writing."""
-    try:
-        file_path = sys.argv[1]
-    except IndexError:
-        print("Error: No se ha especificado el fichero de entrada.")
-        return
+    # try:
+    #     file_path = sys.argv[1]
+    # except IndexError:
+    #     print("Error: No se ha especificado el fichero de entrada.")
+    #     return
 
-    # Comprobar si se pasa fichero de salida por argumento
-    if len(sys.argv) > 2:
-        output_tex = sys.argv[2]
-    else:
-        # Construir nombre de salida asegurando que no exista ya
-        # Obtener nombre base y extensión del fichero de entrada
-        base_name, ext = os.path.splitext(os.path.basename(file_path))
+    # # Comprobar si se pasa fichero de salida por argumento
+    # if len(sys.argv) > 2:
+    #     output_tex = sys.argv[2]
+    # else:
+    #     # Obtener nombre base y extensión del fichero de entrada
+    #     base_name, ext = os.path.splitext(os.path.basename(file_path))
 
-        # Obtener fecha actual en formato yyyy-mm-dd
-        today = datetime.now().strftime("%Y-%m-%d")
+    #     # Obtener fecha actual en formato yyyy-mm-dd
+    #     today = datetime.now().strftime("%Y-%m-%d")
 
-        # Nombre base para el fichero de salida
-        output_base = f"{base_name}-revisado-{today}"
-        output_ext = ext if ext else ".tex"
-        output_tex = output_base + output_ext
-        version = 1
-        while os.path.exists(output_tex):
-            output_tex = f"{output_base}v{version}{output_ext}"
-            version += 1
+    #     # Nombre base para el fichero de salida
+    #     output_base = f"{base_name}-revisado-{today}"
+    #     output_ext = ext if ext else ".tex"
+    #     output_tex = output_base + output_ext
+    #     version = 1
+    #     while os.path.exists(output_tex):
+    #         output_tex = f"{output_base}v{version}{output_ext}"
+    #         version += 1
 
-
-    # file_path = sys.argv[1]
-    # output_tex = sys.argv[2]
-
-    # file_path = "ejemplo1.tex"
-    # output_tex = "a.tex"
+    file_path = "ejemplo2.tex"
+    output_tex = "a.tex"
     new_tex = ""
 
 
@@ -158,7 +153,7 @@ def process_tex_file():
                 # Print results based on classification
                 if line_type is LineType.SECTION or line_type is LineType.CHAPTER:
                     line = process_section_chapter_declaration(lines, i,weasels, spanglish)
-                    if not first_paragraph_flag:
+                    if not first_paragraph_flag and  "section" in line:
                         first_paragraph_flag = 1
                         note = add_note(NoteType.CHAPTER_MISSING_INTRO, "")
                         new_tex += note + line + "\n"
@@ -201,10 +196,12 @@ def process_tex_file():
     except Exception as e:
         print(f"Error processing file: {e}")
 
+
 process_tex_file()
+
 # Example usage
-if __name__ == "__main__":  # Replace with your .tex file path
-    process_tex_file()
+# if __name__ == "__main__":  # Replace with your .tex file path
+#     process_tex_file()
 
 
 

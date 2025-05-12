@@ -273,15 +273,15 @@ def process_latex_paragraph1(text, ignore_words):
     to_ignore, to_analyze = separate_latex_commands(text)
     paragraph = ""
     
-    temp_separator = " \n "  # Unique string with non-word characters
-
+    temp_separator = " my12345separator "  # Unique string with non-word characters
+    ignore_words.append(temp_separator.strip())
     for value in to_analyze.values():
         paragraph += value + temp_separator
     
     colors = ['Green', 'Cerulean', 'red']
     paragraph = highlight_repeated_words_window(paragraph, colors, 200, ignore_words)
     # Split into parts using separator
-    highlighted_parts = paragraph.split(temp_separator)
+    highlighted_parts = paragraph.split(temp_separator.strip()) # hace falta por si algún comando le quitó el espacio al separator
     
     # Update dictionary with highlighted parts
     for key, part in zip(to_analyze.keys(), highlighted_parts):
@@ -290,7 +290,7 @@ def process_latex_paragraph1(text, ignore_words):
     return p
 
 
-def highlight_repeated_words_window(text, color_list, window_size=100, ignore_words= None, long_sentence_limit = 15):
+def highlight_repeated_words_window(text, color_list, window_size=150, ignore_words= None, long_sentence_limit = 18):
     if ignore_words is None:
         ignore_words = []
     # Normalize ignore_words to lower-case for case-insensitive comparison
@@ -299,13 +299,13 @@ def highlight_repeated_words_window(text, color_list, window_size=100, ignore_wo
     # Tokenize words and keep track of their positions (start, end in chars)
     words_with_pos = [
         (m.group(0), m.start(), m.end())
-        for m in re.finditer(r'\b\w+\b', text)
+        for m in re.finditer(r'\b(?!\d+$)[^\s]+\b', text)  # Match sequences, exclude numbers-only
     ]
     words_lower = [w[0].lower() for w in words_with_pos]
 
     # Define a filter function for valid words
     def is_valid(word):
-        return len(word) > 2 and word not in ignore_words_set
+        return len(word) > 2 and word.strip() not in ignore_words_set
 
     # Global frequency count (only valid words)
     filtered_words = [w for w in words_lower if is_valid(w)]
@@ -361,6 +361,8 @@ def highlight_repeated_words_window(text, color_list, window_size=100, ignore_wo
     sentence_pattern = r'([^.!?]*[.!?]["\']?[ \t]*)'
 
     sentences = re.findall(sentence_pattern, text)
+    if not sentences:
+        sentences = [text]
     highlighted_sentences = []
 
     for sentence in sentences:
@@ -383,11 +385,6 @@ def highlight_repeated_words_window(text, color_list, window_size=100, ignore_wo
 
 
 
-
-
-
-
-latex_text = r"""\textbf{This} is a test sentence. sentence is just a test. The test is successful. The word test appears many fine times.\note{ Here} a lo mejor we have another paragraph\cite[abs]{old}. Another paragraph is red \sethlcolor{red}\hl{fine} remover. Paragraph repetition here is what cite means and \cite[abs]{rr} this paragraph does.Eres visto de múltiples y disímiles maneras. Tú, el que encuentra todo rápido."""
 
 
 
