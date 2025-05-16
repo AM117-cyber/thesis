@@ -12,6 +12,7 @@ class LineType(Enum):
     MATH = auto()
     CHAPTER = auto()
     PARAGRAPH = auto()
+    BEGIN_BLOCK_START_END = auto()
     COMMAND = auto()
     IGNORE = auto()
     COMMENT = auto()
@@ -72,7 +73,7 @@ def detect_passive_voice(text):
                     break
     return spans
 
-def detectar_primera_segunda_persona_y_adjetivos(texto):
+def detectar_primera_segunda_persona(texto):
     doc = nlp(texto)
     spans = {}
     pronouns = {"yo", "tú", "vos", "usted", "ustedes", "nosotros", "nosotras", "vosotros", "vosotras", "me"}
@@ -99,15 +100,18 @@ def detectar_primera_segunda_persona_y_adjetivos(texto):
             spans[token.idx, token.idx + len(token.text)] = "Person"
         
         # Check for adjectives
-        elif token.pos_ == "ADJ":
-            spans[token.idx, token.idx + len(token.text)] = "ADJ"
+        ##############################################
+        ############# COMMENTING ADJs FOR NOW ########
+        ##############################################
+        # elif token.pos_ == "ADJ":
+        #     spans[token.idx, token.idx + len(token.text)] = "ADJ"
     
     return spans
 
 
-def mark_first_second_person_and_adject(doc_content:str) ->str:
+def mark_first_second_person(doc_content:str) ->str:
     # Step 2:[] Highlight first/second person verbs, pronouns, and adjectives
-    spans = detectar_primera_segunda_persona_y_adjetivos(doc_content)
+    spans = detectar_primera_segunda_persona(doc_content)
     # Sort spans by start position to process them in order
     spans = sorted(spans.items(), key=lambda x: x[0][0])
     offset = 0
@@ -212,9 +216,10 @@ def line_classifier(line: str) -> LineType:
     # Check for math environments
     if re.match(r'^\\begin\{equation|\begin\{align|\begin\{gather|\begin\{multiline', line, re.IGNORECASE):
         return LineType.MATH
-    
+    if re.match(r'^\\begin\{(document|abstract|frame|quote|multicols|parcolumns|itemize)', line, re.IGNORECASE):
+        return LineType.BEGIN_BLOCK_START_END
     # Check for other non-text environments (excluding document, abstract, etc.)
-    if re.match(r'^\\begin\{(?!document|abstract|frame|quote|multicols|parcolumns|itemize)', line, re.IGNORECASE):
+    if re.match(r'^\\begin\{', line, re.IGNORECASE):
         return LineType.IGNORE
     
     # Default to paragraph
@@ -390,7 +395,7 @@ def call_optional_method(text, position, envs, to_ignore, to_analyze):
         if it finds them it adds them to ignore, while adding to analyze the spaces between them.
         This method is only for commands to ignore'''
     env_index = 0
-    while env_index < len(envs):
+    while env_index < len(envs) and position < len(text):
         character = text[position]
         init_position = position
         while character == " ":
