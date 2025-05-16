@@ -6,7 +6,7 @@ import sys
 
 from repetition import process_latex_paragraph, process_latex_paragraph1
 from utils import LineType, NoteType, add_note, check_number, get_begin_end_block, line_classifier, merge_dicts_by_start_order, process_section_chapter_declaration, separate_latex_commands
-from utils import mark_first_second_person_and_adject, mark_passive_voice, mark_weasel_spanglish
+from utils import mark_first_second_person, mark_passive_voice, mark_weasel_spanglish
 
 
 ###############################################
@@ -159,15 +159,15 @@ def process_tex_file():
                         new_tex += note + line + "\n"
                     else:   
                         new_tex += line + "\n"
-                elif line_type is LineType.COMMAND or line_type is LineType.IMAGE or line_type is LineType.COMMENT:
+                elif line_type is LineType.COMMAND or line_type is LineType.IMAGE or line_type is LineType.COMMENT or line_type is LineType.BEGIN_BLOCK_START_END:
                     new_tex += line + "\n"
                 elif line_type is LineType.PARAGRAPH:
-
+                    
                     first_paragraph_flag = 1
                     to_ignore, to_analyze = separate_latex_commands(line)
                     for key, value in to_analyze.items():
                         to_analyze[key] = mark_passive_voice(to_analyze[key])
-                        to_analyze[key] = mark_first_second_person_and_adject(to_analyze[key]) # Separar cuando se encuentra 1ra, 2da persona o adjetivo
+                        to_analyze[key] = mark_first_second_person(to_analyze[key]) # Separar cuando se encuentra 1ra, 2da persona o adjetivo
                         to_analyze[key] = mark_weasel_spanglish(weasels, spanglish, to_analyze[key])
 
 
@@ -199,7 +199,7 @@ def process_tex_file():
 
 process_tex_file()
 
-# Example usage
+# # Example usage
 # if __name__ == "__main__":  # Replace with your .tex file path
 #     process_tex_file()
 
