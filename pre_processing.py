@@ -5,7 +5,7 @@ import spacy
 import sys
 
 from repetition import process_latex_paragraph, process_latex_paragraph1
-from utils import LineType, NoteType, add_note, check_number, get_begin_end_block, line_classifier, merge_dicts_by_start_order, process_section_chapter_declaration, separate_latex_commands
+from utils import LineType, NoteType, add_note, check_number, fix_cite_usage, format_latex_commands, get_begin_end_block, get_math_block, line_classifier, merge_dicts_by_start_order, process_section_chapter_declaration, remove_inline_comments, sanitize_preamble, separate_latex_commands
 from utils import mark_first_second_person, mark_passive_voice, mark_weasel_spanglish
 
 
@@ -17,9 +17,9 @@ weasels = [
     "varios", "varias", "extremadamente", "excesivamente", "notablemente", 
     "pocos", "poco", "sorprendentemente", "principalmente", "mayormente", 
     "en gran medida", "enorme", "minúsculo", "excelente", "significativo", 
-    "significativa", "significativamente", "sustancial", "sustancialmente", 
-    "claramente", "vasto", "relativamente", "completamente","unos", "unas", 
-    "cualquier", "alguno", "alguna", "algunos", "algunas", "bueno", "malo", "regular",
+    "significativa", "significativamente", "sustancial", "sustancialmente",
+    "tradicionalmente", "claramente", "vasto", "relativamente", "completamente",
+    "unos", "unas", "cualquier", "alguno", "alguna", "algunos", "algunas", "bueno", "malo", "regular",
     "supuestamente", "aparentemente", "algo", "alguien", "básicamente", 
     "casi", "cerca de", "cosa", "demasiado", "en cierto modo", 
     "en cierto sentido", "en gran medida", "en la mayoría de los casos", 
@@ -28,16 +28,19 @@ weasels = [
     "más o menos", "por lo general", "quizá", "quizás", "se dice que", 
     "se estima que", "se podría decir que", "según se cree", 
     "la mayoría de la gente dice", "la mayoría de la gente piensa", 
-    "los investigadores creen"
+
+    
+    "los investigadores creen", "para muchos", "creciente",
+    "ha revolucionado",  "concisas"
 ]
 
-spanglish = ["parsear", "remover", "fitness"]
+spanglish = ["parsear", "remover", "fitness", "mapearse", "tag", "script"]
 
 
 
 ignore_for_repetition = [
     # Articles
-    "el", "la", "los", "las", "un", "una", "unos", "unas",
+    "el", "la", "los", "las", "un", "una", "unos", "unas", "del", "al",
     
     # Prepositions
     "a", "ante", "bajo", "con", "contra", "de", "desde", "en", "entre", 
@@ -46,7 +49,7 @@ ignore_for_repetition = [
     # Pronouns
     "yo", "tú", "él", "ella", "usted", "nosotros", "vosotros", "ellos", 
     "ellas", "ustedes", "me", "te", "se", "nos", "os", "le", "les", "lo", 
-    "la", "los", "las", "mi", "tu", "su", "nuestro", "vuestro", "mío", "tuyo",
+    "la", "los", "las", "mi", "tu", "su", "sus", "tus", "nuestro", "vuestro", "mío", "tuyo",
     
     # Common conjunctions
     "y", "o", "u", "pero", "mas", "aunque", "como", "que", "si", "porque", 
@@ -68,38 +71,57 @@ ignore_for_repetition = [
     "quien", "cuál", "cuáles", "cuánto", "cuánta", "cuántos", "cuántas",
     
     # Time-related words
-    "hoy", "ayer", "mañana", "año", "mes", "semana", "día", "hora", "vez"
+    "hoy", "ayer", "mañana", "año", "mes", "semana", "día", "hora", "vez",
+
+    "más", "que", "mas", "qué"
+
 ]
+
+amount_of_comments_for_new_page = 25
 
 def process_tex_file():
     """Processes a LaTeX file to find errors in its writing."""
+
     # try:
     #     file_path = sys.argv[1]
     # except IndexError:
     #     print("Error: No se ha especificado el fichero de entrada.")
-    #     return
+    #     sys.exit(1)
 
-    # # Comprobar si se pasa fichero de salida por argumento
+    # # Define the base directory for revisions
+    # revisions_dir = "revisiones"
+
+    # # Ensure the base directory exists
+    # os.makedirs(revisions_dir, exist_ok=True)
+
+    # # Get the current date in yyyy-mm-dd format
+    # today = datetime.now().strftime("%Y-%m-%d")
+
+    # # Create the path for today's folder inside revisiones
+    # output_folder = os.path.join(revisions_dir, today)
+    # os.makedirs(output_folder, exist_ok=True)  # Ensure the directory exists
+
+    # # Determine output file name
     # if len(sys.argv) > 2:
-    #     output_tex = sys.argv[2]
+    #     output_tex = os.path.join(output_folder, sys.argv[2])
     # else:
-    #     # Obtener nombre base y extensión del fichero de entrada
     #     base_name, ext = os.path.splitext(os.path.basename(file_path))
-
-    #     # Obtener fecha actual en formato yyyy-mm-dd
-    #     today = datetime.now().strftime("%Y-%m-%d")
-
-    #     # Nombre base para el fichero de salida
     #     output_base = f"{base_name}-revisado-{today}"
     #     output_ext = ext if ext else ".tex"
-    #     output_tex = output_base + output_ext
+    #     output_tex = os.path.join(output_folder, f"{output_base}{output_ext}")
+
+    #     # Ensure unique file name
     #     version = 1
     #     while os.path.exists(output_tex):
-    #         output_tex = f"{output_base}v{version}{output_ext}"
+    #         output_tex = os.path.join(output_folder, f"{output_base}v{version}{output_ext}")
     #         version += 1
 
-    file_path = "ejemplo2.tex"
-    output_tex = "a.tex"
+
+
+    file_path = "ejemplo1.tex"
+    output_tex = "Dario.tex"
+
+
     new_tex = ""
 
 
@@ -108,14 +130,7 @@ def process_tex_file():
 
             tex_content = file.read().strip()
 
-            macro_definitions = r"""
-\usepackage{stackengine}
-\stackMath
-\usepackage{soul}
-\usepackage[dvipsnames]{xcolor}
-
-\input{word-comments.tex}
-"""
+            my_commands = [r"\usepackage[dvipsnames]{xcolor}",r"\input{word-comments.tex}"]
 
             doc_pattern = re.compile(r"(\\begin\{document\})(.*?)(\\end\{document\})", re.DOTALL)
             match = doc_pattern.search(tex_content)
@@ -128,10 +143,14 @@ def process_tex_file():
             doc_content = match.group(2)
             doc_end = match.group(3)
             post_doc = tex_content[match.end(3):]
+            comments = 0
 
-            new_preamble = preamble + macro_definitions
+            new_preamble, conflict = sanitize_preamble(preamble, my_commands)
+            if conflict:
+                new_tex += "\n\\notaparaelautor{Algunos comandos antes de begin{document} fueron comentados por posibles conflictos}" + "\n"
 
-
+            doc_content = remove_inline_comments(doc_content)
+            doc_content = format_latex_commands(doc_content)
             # Now properly split into lines
             lines = doc_content.split('\n')  # Split on newlines
             lines = [line.rstrip('\n') for line in lines]  # Remove any trailing newlines
@@ -162,25 +181,44 @@ def process_tex_file():
                 elif line_type is LineType.COMMAND or line_type is LineType.IMAGE or line_type is LineType.COMMENT or line_type is LineType.BEGIN_BLOCK_START_END:
                     new_tex += line + "\n"
                 elif line_type is LineType.PARAGRAPH:
-                    
+                    # if it is classified as a paragraph then check the following lines to determine its extension
+                    # it will be considered part of the same text until the line reached is blank or starts with \item or \colchunk
                     first_paragraph_flag = 1
+                    while i < total_lines-1:
+                        next_line = lines[i+1]
+                        if len(next_line) > 0 and not next_line.startswith(r'\item') and not next_line.startswith(r'\colchunk'):
+                            i +=1
+                            line += " " + next_line
+                        else:
+                            break
+                    line = fix_cite_usage(line)
                     to_ignore, to_analyze = separate_latex_commands(line)
                     for key, value in to_analyze.items():
-                        to_analyze[key] = mark_passive_voice(to_analyze[key])
-                        to_analyze[key] = mark_first_second_person(to_analyze[key]) # Separar cuando se encuentra 1ra, 2da persona o adjetivo
-                        to_analyze[key] = mark_weasel_spanglish(weasels, spanglish, to_analyze[key])
+                        # dentro de estos métodos vamos a aumentar el contador de comments
+                        to_analyze[key], comments = mark_passive_voice(to_analyze[key], comments)
+                        to_analyze[key], comments = mark_first_second_person(to_analyze[key], comments) # Separar cuando se encuentra 1ra, 2da persona o adjetivo
+                        to_analyze[key], comments = mark_weasel_spanglish(weasels, spanglish, to_analyze[key], comments)
 
 
                     
                     line = merge_dicts_by_start_order(to_ignore, to_analyze)
                     # this method is not considering repeated words inside a comment when it should
                     p = process_latex_paragraph1(line, ignore_for_repetition)
+                    # si en este punto los comments superan la cantidad por página entonces agregamos \newpage
                     new_tex += p + "\n"
-                else: # the line begins with \begin{} and its content doesn't need revision
-                # Detect begin blocks
-                    begin_end_block, i = get_begin_end_block(lines, i)
-                    new_tex += begin_end_block + "\n"
+                    if comments >= amount_of_comments_for_new_page:
+                        new_tex += "\n\\notaparaelautor{Salto de línea para tener espacio para los comentarios.}\n\\newpage\n"
+                        comments = 0
+                else: # the line is the beginning of a block that doesn't need revision
+                    block = ""
+                    if "\\begin" in line:
+                        # Detect begin blocks
+                        block, i = get_begin_end_block(lines, i)
+                    if line == "\[":
+                        block, i = get_math_block(lines, i)
+                    new_tex += block + "\n"
                 i += 1
+            # new_tex = check_ambiguity_and_transitions(new_tex)
             new_tex_content = new_preamble + doc_begin + new_tex + doc_end + post_doc
             with open(output_tex, "w", encoding="utf-8") as f:
                 f.write(new_tex_content)
@@ -199,7 +237,7 @@ def process_tex_file():
 
 process_tex_file()
 
-# # Example usage
+# Example usage
 # if __name__ == "__main__":  # Replace with your .tex file path
 #     process_tex_file()
 

@@ -4,7 +4,7 @@ import spacy
 from collections import defaultdict, Counter
 
 
-from utils import mark_first_second_person_and_adject, mark_passive_voice, mark_weasel_spanglish, merge_dicts_by_start_order, separate_latex_commands
+from utils import NoteType, add_note, mark_first_second_person, mark_passive_voice, mark_weasel_spanglish, merge_dicts_by_start_order, separate_latex_commands
 
 nlp = spacy.load("es_core_news_sm")
 
@@ -265,32 +265,72 @@ def process_latex_paragraph(text, ignore_words):
 
     return ''.join(modified_text)
 
-# Rest of the code (main function, etc.) remains the same as previous solution
+
+def check_starting_commands(text, word, to_analyze, to_ignore):
+    stripped_text = text.lstrip()
+    leading_spaces = len(text) - len(stripped_text)
+    
+    end_pos = 0
+    modification_needed = stripped_text.startswith(word)
+    
+    if modification_needed:
+        # Calculate end position (start of word + length of word)
+        first_key = next(iter(to_ignore))
+        first_value = to_ignore.pop(first_key)  # Remove old key
+
+        new_key = (0, first_key[1])  # Keep the original end
+
+        # Reinsert with the new key        
+        first_key = next(iter(to_analyze))
+        to_ignore[new_key] = to_analyze[first_key] + first_value
+        first_value = to_analyze.pop(first_key)  # Remove old key
+
+    # no need to sort dicts because the order affected is in to_ignore, which we sort when merging with to_analyze
+    return modification_needed
+
+def invalid_item_end(text, tmp_separator):
+    pattern = r'[.!?:;,]$|,\s*( y| o)$'
+    text = text.strip(tmp_separator)
+    return not bool(re.search(pattern, text.strip()))
+        # text = add_note(NoteType.ITEM_PUNCTUATION, text)
 
 
 
 def process_latex_paragraph1(text, ignore_words):
     to_ignore, to_analyze = separate_latex_commands(text)
     paragraph = ""
+    is_item = check_starting_commands(text, "\item", to_analyze, to_ignore)
     
     temp_separator = " my12345separator "  # Unique string with non-word characters
+
     ignore_words.append(temp_separator.strip())
     for value in to_analyze.values():
         paragraph += value + temp_separator
-    
     colors = ['Green', 'Cerulean', 'red']
+    add_sign = False
+    if is_item and invalid_item_end(paragraph, temp_separator):
+        add_sign = True
     paragraph = highlight_repeated_words_window(paragraph, colors, 200, ignore_words)
     # Split into parts using separator
     highlighted_parts = paragraph.split(temp_separator.strip()) # hace falta por si algún comando le quitó el espacio al separator
-    
+    # regex_pattern = '\s*'+ temp_separator.strip() + '\s*'
+    # # regex_pattern = r'(\s*myseparator\s*)'  # Preserves surrounding spaces
+
+    # highlighted_parts = re.split(regex_pattern, paragraph) # hace falta por si algún comando le quitó el espacio al separator
+
+    # # Remove separator tokens but keep spaces
+    # highlighted_parts = [part for part in highlighted_parts if part != temp_separator]
+
     # Update dictionary with highlighted parts
     for key, part in zip(to_analyze.keys(), highlighted_parts):
-        to_analyze[key] = part  # Remove extra whitespace
+        to_analyze[key] = part 
     p = merge_dicts_by_start_order(to_ignore, to_analyze)
+    if add_sign:
+        p += r"  \agregaesto{SIGNO}"
     return p
 
 
-def highlight_repeated_words_window(text, color_list, window_size=150, ignore_words= None, long_sentence_limit = 18):
+def highlight_repeated_words_window(text, color_list, window_size = 150, ignore_words = None, long_sentence_limit = 40, ):
     if ignore_words is None:
         ignore_words = []
     # Normalize ignore_words to lower-case for case-insensitive comparison
@@ -361,18 +401,24 @@ def highlight_repeated_words_window(text, color_list, window_size=150, ignore_wo
     sentence_pattern = r'([^.!?]*[.!?]["\']?[ \t]*)'
 
     sentences = re.findall(sentence_pattern, text)
-    if not sentences:
-        sentences = [text]
+    # if not sentences:
+    #     sentences = [text]
+    
+    # if the last found sentence doesn't end the text then add what remains as another sentence.
+    # Check if the last sentence ends the text
+    extracted_text = ''.join(sentences)
+    if len(extracted_text) < len(text):
+        sentences.append(text[len(extracted_text):])
     highlighted_sentences = []
 
     for sentence in sentences:
         # Count valid words in this sentence
-        sentence_words = [w.lower() for w in re.findall(r'\b\w+\b', sentence)]
-        
+        sentence_words = [w.lower() for w in re.findall(r'\b\w+\b', sentence) if is_valid(w.lower())]
+        print(sentence_words)
         if len(sentence_words) > long_sentence_limit:
             # Wrap the entire sentence with a custom highlight (e.g., tcolorbox or custom macro)
             command = "{\color{Thistle} ["
-            sentence = command + f"{{{sentence}}} " + "$^{largo}$]}"
+            sentence = r"\oracionlarga{"+ f"{sentence}" + "} "
         highlighted_sentences.append(sentence)
 
     # Reconstruct the text with long sentences marked

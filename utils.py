@@ -24,11 +24,98 @@ class CommandType(Enum):
     COMMAND = auto()
 
 class NoteType(Enum):
-    MISSING_INTRO = "Una cosa no puede empezar con una subcosa"
+    MISSING_INTRO = "Una cosa no debe empezar con una subcosa"
+    ITEM_PUNCTUATION = "Cada item debe terminar con un signo de puntuación o con: \textless, y\textgreater, \textless, o\textgreater "
     CHAPTER_MISSING_INTRO = "El capítulo debe tener un párrafo introductorio antes de una sección."
     ADJ = auto()
 
 nlp = spacy.load("es_core_news_sm")
+
+def fix_cite_usage(latex_text):
+    """
+    Finds and comments problematic \cite commands where:
+    1. Preceded by punctuation (.,;:!?) with optional whitespace
+    2. Immediately preceded by any non-whitespace character except ~
+    
+    Wraps as: [preceding text] \comment{\cite{content}}{Incorrect citation format}
+    """
+    # Pattern to match wrong citations
+    pattern = r'''
+    (
+        ([^\s~] |       # Option 1: Non-whitespace char that's not ~
+            [.,;:!?]\s*    # Option 2: Punctuation followed by optional whitespace
+        )
+        (\\cite\{.*?\})    # The \cite command itself
+    )
+    '''
+    
+    # Replacement function
+    def replacer(match):
+        preceding_char = match.group(2).strip()
+        cite_cmd = match.group(3)
+        # Insert space between preceding text and comment
+        return f'{preceding_char} \\comment{{{cite_cmd}}}{{Incorrect citation format}}'
+    
+    # Apply replacement
+    fixed_text = re.sub(
+        pattern,
+        replacer,
+        latex_text,
+        flags=re.VERBOSE
+    )
+    
+    return fixed_text
+
+def get_package_details(line):
+    """Extract package name and options from a \\usepackage command."""
+    
+    match = re.match(r"\\usepackage(?:\[(.*?)\])?\{(.*?)\}", line.strip())
+    if match:
+        # options = match.group(1) or ""
+        pkg_name = match.group(2)
+        return pkg_name
+    return line
+
+def sanitize_preamble(original_preamble, my_commands):
+    lines = original_preamble.split('\n')
+    commented_preamble = []
+
+    # Extract packages we're adding (to check for duplicates)
+    my_packages = []
+    for cmd in my_commands:
+        pkg_name= get_package_details(cmd)
+        if pkg_name:
+            my_packages.append(pkg_name)
+    conflict = False
+
+    for line in lines:
+        line_stripped = line.strip()
+        pkg_name = get_package_details(line_stripped)
+        
+        
+        # Case 1: Duplicate package (e.g., xcolor in original vs. xcolor[dvipsnames] in mine)
+        if pkg_name in my_packages:
+            conflict = True
+            line = f"% [AUTO-REMOVED DUPLICATE] {line}"
+        
+        
+        # Case 2: Known conflicts (e.g., soul vs. hyperref)
+        # if not conflict_found:
+        #     for pkg, conflict_list in conflicts.items():
+        #         for conflict_cmd in conflict_list:
+        #             if re.search(re.escape(conflict_cmd), line_stripped):
+        #                 line = f"% [AUTO-REMOVED CONFLICT] {line}"
+        #                 conflict_found = True
+        #                 break
+        #         if conflict_found:
+        #             break
+        
+        commented_preamble.append(line)
+    
+    # Insert new commands after sanitized preamble
+    new_preamble = "\n".join(commented_preamble) + "\n" + "\n".join(my_commands) + "\n"
+    
+    return new_preamble, conflict
 
 def merge_dicts_by_start_order(dict1, dict2):
     """
@@ -78,7 +165,12 @@ def detectar_primera_segunda_persona(texto):
     spans = {}
     pronouns = {"yo", "tú", "vos", "usted", "ustedes", "nosotros", "nosotras", "vosotros", "vosotras", "me"}
     adj_spans = []
-    for i, token in enumerate(doc):
+    i = 0
+    while i < len(doc):
+        token = doc[i]
+        if not token.text.isalpha():
+            i+=1
+            continue
         # Always highlight personal pronouns
         if token.text.lower() in pronouns and token.pos_ == "PRON":
             spans[token.idx, token.idx + len(token.text)] = "Person"
@@ -86,17 +178,23 @@ def detectar_primera_segunda_persona(texto):
         # Check for compound verbs (aux + participle) in 1st/2nd person
         if token.pos_ == "AUX" and ("Person=1" in token.morph or "Person=2" in token.morph):
             # Look ahead for participle
+            compound = False
             for j in range(i + 1, min(i + 3, len(doc))):
                 next_token = doc[j]
                 if (next_token.pos_ == "VERB" and "VerbForm=Part" in next_token.morph):
                     span_start = token.idx
                     span_end = next_token.idx + len(next_token.text)
                     spans[span_start, span_end] = "Person"
+                    i = span_end
+                    compound = True
                     break
-            spans[token.idx, token.idx + len(token.text)] = "Person"
+            if not compound:
+                spans[token.idx, token.idx + len(token.text)] = "Person"
+            
         
         # Check for simple verbs in 1st/2nd person
         elif token.pos_ == "VERB" and ("Person=1" in token.morph or "Person=2" in token.morph):
+            print(token.morph)
             spans[token.idx, token.idx + len(token.text)] = "Person"
         
         # Check for adjectives
@@ -105,11 +203,11 @@ def detectar_primera_segunda_persona(texto):
         ##############################################
         # elif token.pos_ == "ADJ":
         #     spans[token.idx, token.idx + len(token.text)] = "ADJ"
-    
+        i+=1
     return spans
 
 
-def mark_first_second_person(doc_content:str) ->str:
+def mark_first_second_person(doc_content:str, comments) ->str:
     # Step 2:[] Highlight first/second person verbs, pronouns, and adjectives
     spans = detectar_primera_segunda_persona(doc_content)
     # Sort spans by start position to process them in order
@@ -130,13 +228,14 @@ def mark_first_second_person(doc_content:str) ->str:
         if curr_span[1] == "ADJ":
             comment_text = "{Adjetivo.} "
         wrapped = '\comment {'+original+'}' + comment_text
+        comments +=1
         doc_content = doc_content[:real_start] + wrapped + doc_content[real_end:]
         offset += len(wrapped) - (end - start)
         index += 1
 
-    return doc_content
+    return doc_content, comments
 
-def mark_passive_voice(doc_content:str) -> str:
+def mark_passive_voice(doc_content:str, comments) -> str:
     # Step 1: Highlight passive voice (ser + participle) and returns the text highlighted
     spans = detect_passive_voice(doc_content)
     offset = 0
@@ -144,31 +243,39 @@ def mark_passive_voice(doc_content:str) -> str:
         real_start = start + offset
         real_end = end + offset
         original = doc_content[real_start:real_end]
-        wrapped = '\comment {'+original+'}{Voz p} '
+        wrapped = '\comment {'+original+'}{Voz pasiva} '
+        comments +=1
         doc_content = doc_content[:real_start] + wrapped + doc_content[real_end:]
         offset += len(wrapped) - (end - start)
-    return doc_content
+    return doc_content, comments
 
 
-def mark_weasel_spanglish(weasel_words, spanglish_words, doc_content:str) -> str:
+def mark_weasel_spanglish(weasel_words, spanglish_words, doc_content:str, comments) -> str:
     
     for word in weasel_words:
         pattern = r'\b' + re.escape(word) + r'\b'
-        doc_content = re.sub(
+        new_content, num_subs = re.subn(
             pattern,
-            lambda m: '\comment {'+ m.group(0) + '}{Palabra de comadreja} ',
+            lambda m: r'\comadreja{' + m.group(0) + '}',
             doc_content,
             flags=re.IGNORECASE
         )
+        if num_subs > 0:
+            doc_content = new_content
+            comments += num_subs
+
     for word in spanglish_words:
         pattern = r'\b' + re.escape(word) + r'\b'
-        doc_content = re.sub(
+        new_content, num_subs = re.subn(
             pattern,
-            lambda m: '\comment {'+ m.group(0) + '}{Spanglish}',
+            lambda m: r'\comment {' + m.group(0) + '}{Anglicismo}',
             doc_content,
             flags=re.IGNORECASE
         )
-    return doc_content
+        if num_subs > 0:
+            doc_content = new_content
+            comments += num_subs
+    return doc_content, comments
 
 
 def line_classifier(line: str) -> LineType:
@@ -194,7 +301,7 @@ def line_classifier(line: str) -> LineType:
         return LineType.SECTION
 
     # Check for various commands
-    if re.match(r'^\s*\\(maketitle|tableofcontents|listoffigures|listoftables|usepackage|documentclass|setlength|addbibresource|hypersetup)', line, re.IGNORECASE):
+    if re.match(r'^\s*\\(maketitle|tableofcontents|listoffigures|listoftables|usepackage|documentclass|setlength|addbibresource|hypersetup|large|setcounter|newpage)', line, re.IGNORECASE):
         return LineType.COMMAND
 
     # Check for image inclusion
@@ -210,13 +317,17 @@ def line_classifier(line: str) -> LineType:
         return LineType.TABLE
     
     # Check for list environments to ignore   otherlanguage!!!!
-    if re.match(r'^\\begin\{enumerate|\begin\{description', line, re.IGNORECASE):
-        return LineType.LIST_IGNORE
+    # if re.match(r'^\\begin\{enumerate|\begin\{description', line, re.IGNORECASE):
+        # return LineType.LIST_IGNORE
     
     # Check for math environments
     if re.match(r'^\\begin\{equation|\begin\{align|\begin\{gather|\begin\{multiline', line, re.IGNORECASE):
         return LineType.MATH
-    if re.match(r'^\\begin\{(document|abstract|frame|quote|multicols|parcolumns|itemize)', line, re.IGNORECASE):
+
+    if line == "\[":
+        return LineType.MATH
+
+    if re.match(r'^\\begin\{(document|abstract|frame|quote|multicols|parcolumns|itemize|enumerate|description)', line, re.IGNORECASE):
         return LineType.BEGIN_BLOCK_START_END
     # Check for other non-text environments (excluding document, abstract, etc.)
     if re.match(r'^\\begin\{', line, re.IGNORECASE):
@@ -258,6 +369,140 @@ def add_note(type: NoteType,line: str) -> str:
 
 def check_spanglish(line: str) -> str:
     spanglish_words = ["parsear, revolver"]
+
+
+import re
+
+
+def remove_inline_comments(text: str) -> str:
+    """
+    Removes inline LaTeX comments from a string.
+
+    A comment is the '%' symbol and everything that follows it on a line.
+    This function only removes a comment if it is "inline," meaning it is
+    preceded by non-whitespace characters on the same line.
+
+    - 'Text % comment' becomes 'Text'.
+    - '% Full line comment' is NOT changed.
+    - '  % Indented comment' is NOT changed.
+    - 'A sentence with 50\% profit.' is NOT changed (handles escaped percent).
+
+    Args:
+        text: The input string containing LaTeX code.
+
+    Returns:
+        A new string with inline comments removed.
+    """
+    processed_lines = []
+    
+    for line in text.splitlines():
+        # This regex finds the first '%' that is NOT preceded by a '\'.
+        # (?<!\\) is a "negative lookbehind". It asserts that the character
+        # immediately preceding the current position is not a backslash.
+        match = re.search(r'(?<!\\)%', line)
+
+        if match:
+            # A potential comment symbol was found.
+            # Let's see what comes before it.
+            comment_start_index = match.start()
+            content_before_comment = line[:comment_start_index]
+
+            # The core condition: is there any non-whitespace text before the '%'?
+            if content_before_comment.strip():
+                # Yes. This is an inline comment.
+                # We keep the content before the comment and remove any trailing spaces.
+                processed_lines.append(content_before_comment.rstrip())
+            else:
+                # No. The line starts with whitespace and then a '%'.
+                # This is a full-line comment, so we keep the original line.
+                processed_lines.append(line)
+        else:
+            # No comment symbol found on this line, so keep it as is.
+            processed_lines.append(line)
+            
+    # Join the processed lines back together into a single string.
+    return '\n'.join(processed_lines)
+
+
+def format_latex_commands(text: str) -> str:
+    """
+    Finds specific LaTeX commands and adds line breaks around them,
+    but only on lines that are not LaTeX comments.
+
+    A LaTeX comment is any line that starts with a '%' character,
+    potentially preceded by whitespace.
+
+    The function finds the following commands:
+    - \\begin{...}, \\end{...}
+    - \\chapter{...}, \\section{...}, \\subsection{...}, \\subsubsection{...}, etc.
+    - \\[, \\]
+    - \\item
+
+    If a command is found on a non-commented line and it is preceded by a
+    non-whitespace character on that same line, a line break is added before it.
+    A line break is also added after the command's body, except for the \\item
+    command.
+
+    Examples:
+    - 'abcd \\section{...}' becomes 'abcd\\n\\section{...}\\n'
+    - '    \\section{...}' (at start of a line) remains unchanged.
+    - '% my notes \\section{...}' remains unchanged.
+
+    Args:
+        text: The input string containing LaTeX code.
+
+    Returns:
+        A new string with formatted line breaks.
+    """
+    # --- The original regex logic, which is perfect for processing a single line ---
+
+    # This part of the pattern defines all the commands we want to find.
+    # It is wrapped in parentheses to become a capturing group (group 2).
+    command_pattern_group = (
+        r'('
+        r'\\(?:begin|end)\{[a-zA-Z0-9*]+\}'             # \begin{...} or \end{...}
+        # Updated to handle starred versions like \section*{...}
+        r'|\\(?:chapter|(?:sub)*section)\*?\{.*?\}'
+        r'|\\item'                                      # \item
+        r'|\\\[|\\\]'                                   # \[ or \]
+        r')'
+    )
+
+    # The full pattern now does two things:
+    # 1. `(\S.*?)`: This is group 1. It captures any preceding text on the same line.
+    # 2. `command_pattern_group`: This is group 2, which captures the command itself.
+    pattern = re.compile(r'(\S.*?)' + command_pattern_group)
+
+    def replacer(match):
+        """
+        This function is called for each match and defines the replacement.
+        """
+        preceding_text = match.group(1)
+        command = match.group(2)
+        result = preceding_text + '\n' + command
+        if not command.startswith(r'\item'):
+            result += '\n'
+        return result
+
+    # --- New logic to process the text line by line ---
+
+    lines = text.splitlines()
+    processed_lines = []
+
+    for line in lines:
+        # Check if the line is a comment. A comment starts with '%',
+        # ignoring any leading whitespace.
+        if line.strip().startswith('%'):
+            # If it's a comment, add it to our results without changes.
+            processed_lines.append(line)
+        else:
+            # If it's not a comment, apply the regex substitution to the line.
+            processed_line = pattern.sub(replacer, line)
+            processed_lines.append(processed_line)
+
+    # Join the processed lines back into a single string.
+    # splitlines() removes newlines, so we must add them back.
+    return '\n'.join(processed_lines)
 
 # def get_begin_end_block(lines, index): # if the block is not to be ignored I gather each paragraph and process it with th corresponding method
 #     line = lines[index]
@@ -324,6 +569,40 @@ def get_begin_end_block(lines, index):
     return begin_end_block, index
 
 
+def get_math_block(lines, index):
+    """Processes LaTeX math environments across multiple lines."""
+    line = lines[index]
+    
+    depth = 0
+    math_block = []
+    
+    while index < len(lines):
+        # Find all math begin/end markers
+        begins = list(re.finditer(r'\[', line))
+        ends = list(re.finditer(r'\]', line))
+        
+        # Process matches in order
+        matches = sorted(begins + ends, key=lambda m: m.start())
+
+        for match in matches:
+            if match in begins:
+                depth += 1
+            else:
+                depth -= 1
+        
+        math_block.append(line) 
+        
+        if depth > 0:
+            index += 1
+            if index < len(lines):
+                line = lines[index]
+        else:
+            break
+    
+    math_block = '\n'.join(math_block)  # Preserve line breaks
+    return math_block, index
+
+
 
 
 
@@ -344,8 +623,22 @@ def process_section_chapter_declaration(lines, i, weasels, spanglish):
     line = check_number(line) # if the number is written it highlights it
     # line = mark_first_second_person_and_adject(line)
     # line = mark_passive_voice(line)
-    line = mark_weasel_spanglish(weasels, spanglish, line)
-    if i < len(lines)-1 and line_classifier(lines[i+1]) is LineType.SECTION:
+    errors = ''
+    doc = nlp(line)
+    for word in doc:
+        if word.text in weasels:
+            errors += f"la palabra comadreja: {word.text}, "
+        if word.text in spanglish:
+            errors += f"el anglicismo: {word.text}, "
+    if len(errors) > 0:
+        line += "\n" + r"\notaparaelautor{En el nombre del capítulo o sección pusiste: " + errors.strip(", ") + "} \n"
+    next_line = ''
+    while i < len(lines)-1 and next_line.strip() == "":
+        next_line = lines[i+1]
+        i+=1
+    
+    next_line_type = line_classifier(next_line) 
+    if next_line_type is LineType.SECTION or next_line_type is LineType.BEGIN_BLOCK_START_END or next_line.strip().startswith(r"\paragraph{"):
         # print(f"No intro after {line_type.name}: {line}")
         line = add_note(NoteType.MISSING_INTRO, line)
         # line = check_spanglish(line)
@@ -511,7 +804,7 @@ def separate_latex_commands(text):
 
 
 def process_command_arg1(depth, curr_pos, matches, index, text, to_ignore, to_analyze):
-    commands_to_consider = ['textbf', 'hl','comment', 'textcolor']
+    commands_to_consider = ['textbf', 'textit', 'hl','comment', 'textcolor', 'comadreja']
     matches = list(matches) 
     # matches elements are in the form: [[start, end], type]
     index = index
@@ -533,6 +826,8 @@ def process_command_arg1(depth, curr_pos, matches, index, text, to_ignore, to_an
                 to_ignore[match[0][0], match[0][1]] = text[match[0][0]: match[0][1]]
                 if depth <= 0:
                     return curr_pos
+            else:
+                to_analyze[match[0][0], match[0][1]] = text[match[0][0]: match[0][1]]
         print(match[1])
         if match[1][0] is CommandType.COMMAND:
             command_name = text[match[0][0]+1:match[0][1]] # +1 to skip \
