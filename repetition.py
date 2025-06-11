@@ -299,6 +299,7 @@ def invalid_item_end(text, tmp_separator):
 def process_latex_paragraph1(text, ignore_words):
     to_ignore, to_analyze = separate_latex_commands(text)
     paragraph = ""
+    for_LLM = ""
     is_item = check_starting_commands(text, "\item", to_analyze, to_ignore)
     
     temp_separator = " my12345separator "  # Unique string with non-word characters
@@ -306,6 +307,7 @@ def process_latex_paragraph1(text, ignore_words):
     ignore_words.append(temp_separator.strip())
     for value in to_analyze.values():
         paragraph += value + temp_separator
+        for_LLM += value
     colors = ['Green', 'Cerulean', 'red']
     add_sign = False
     if is_item and invalid_item_end(paragraph, temp_separator):
@@ -327,7 +329,7 @@ def process_latex_paragraph1(text, ignore_words):
     p = merge_dicts_by_start_order(to_ignore, to_analyze)
     if add_sign:
         p += r"  \agregaesto{SIGNO}"
-    return p
+    return p, for_LLM
 
 
 def highlight_repeated_words_window(text, color_list, window_size = 150, ignore_words = None, long_sentence_limit = 40, ):

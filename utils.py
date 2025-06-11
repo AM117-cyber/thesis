@@ -224,9 +224,9 @@ def mark_first_second_person(doc_content:str, comments) ->str:
         # if any(s <= real_start and real_end <= e for (s, e) in spans.keys() if s < start):
         #     continue
         original = doc_content[real_start:real_end]
-        comment_text = "{Escribir en 3ra persona.} "
+        comment_text = "{Escribir en 3ra persona} "
         if curr_span[1] == "ADJ":
-            comment_text = "{Adjetivo.} "
+            comment_text = "{Adjetivo} "
         wrapped = '\comment {'+original+'}' + comment_text
         comments +=1
         doc_content = doc_content[:real_start] + wrapped + doc_content[real_end:]
@@ -281,7 +281,7 @@ def mark_weasel_spanglish(weasel_words, spanglish_words, doc_content:str, commen
 def line_classifier(line: str) -> LineType:
     """Classifies a LaTeX line into different types, handling leading commands."""
     line = line.strip()
-    
+    print(line)
     # Handle cases like "\centering \begin{figure}"
     if '\\begin{' in line:
         # Extract just the \begin{...} part if there are preceding commands
@@ -358,8 +358,8 @@ def check_number(line: str) -> str:
     remaining_content = content[len(number):]
     
     # Reconstruct with highlighted number
-    color = "\sethlcolor{orange}"
-    highlighted = f"{command}{{{color}\hl{{{number.strip()}}}{remaining_content}}}\n"
+    
+    highlighted = f"{command}{{\\textcolor{{orange}}{{{number.strip()}}}{remaining_content}}}\n"
     highlighted += "\\notaparaelautor{No pongas el número de la sección tú a mano. Deja que LaTeX se encargue de eso.}\n"
     return highlighted
 
@@ -370,19 +370,16 @@ def add_note(type: NoteType,line: str) -> str:
 def check_spanglish(line: str) -> str:
     spanglish_words = ["parsear, revolver"]
 
-
-import re
-
-
-def remove_inline_comments(text: str) -> str:
+def jump_inline_comments(text: str) -> str:
     """
-    Removes inline LaTeX comments from a string.
+    Moves inline LaTeX comments to a new line.
 
     A comment is the '%' symbol and everything that follows it on a line.
-    This function only removes a comment if it is "inline," meaning it is
-    preceded by non-whitespace characters on the same line.
+    This function only moves a comment if it is "inline," meaning it is
+    preceded by non-whitespace characters on the same line. A line jump is
+    inserted right before the comment.
 
-    - 'Text % comment' becomes 'Text'.
+    - 'Text % comment' becomes 'Text\n% comment'.
     - '% Full line comment' is NOT changed.
     - '  % Indented comment' is NOT changed.
     - 'A sentence with 50\% profit.' is NOT changed (handles escaped percent).
@@ -391,7 +388,7 @@ def remove_inline_comments(text: str) -> str:
         text: The input string containing LaTeX code.
 
     Returns:
-        A new string with inline comments removed.
+        A new string with inline comments moved to their own lines.
     """
     processed_lines = []
     
@@ -403,15 +400,17 @@ def remove_inline_comments(text: str) -> str:
 
         if match:
             # A potential comment symbol was found.
-            # Let's see what comes before it.
             comment_start_index = match.start()
             content_before_comment = line[:comment_start_index]
+            comment_part = line[comment_start_index:]
 
             # The core condition: is there any non-whitespace text before the '%'?
             if content_before_comment.strip():
                 # Yes. This is an inline comment.
-                # We keep the content before the comment and remove any trailing spaces.
+                # Append the content before the comment (stripping trailing space).
                 processed_lines.append(content_before_comment.rstrip())
+                # Append the comment part as a new "line".
+                processed_lines.append(comment_part)
             else:
                 # No. The line starts with whitespace and then a '%'.
                 # This is a full-line comment, so we keep the original line.
@@ -420,7 +419,8 @@ def remove_inline_comments(text: str) -> str:
             # No comment symbol found on this line, so keep it as is.
             processed_lines.append(line)
             
-    # Join the processed lines back together into a single string.
+    # Join the processed lines back together, which inserts the newline
+    # between the content and the moved comment.
     return '\n'.join(processed_lines)
 
 
@@ -620,6 +620,7 @@ def get_math_block(lines, index):
 
 def process_section_chapter_declaration(lines, i, weasels, spanglish):
     line = lines[i]
+    line_additions = ""
     line = check_number(line) # if the number is written it highlights it
     # line = mark_first_second_person_and_adject(line)
     # line = mark_passive_voice(line)
@@ -631,7 +632,7 @@ def process_section_chapter_declaration(lines, i, weasels, spanglish):
         if word.text in spanglish:
             errors += f"el anglicismo: {word.text}, "
     if len(errors) > 0:
-        line += "\n" + r"\notaparaelautor{En el nombre del capítulo o sección pusiste: " + errors.strip(", ") + "} \n"
+        line_additions += "\n" + r"\notaparaelautor{En el nombre del capítulo o sección pusiste: " + errors.strip(", ") + "} \n"
     next_line = ''
     while i < len(lines)-1 and next_line.strip() == "":
         next_line = lines[i+1]
@@ -640,10 +641,10 @@ def process_section_chapter_declaration(lines, i, weasels, spanglish):
     next_line_type = line_classifier(next_line) 
     if next_line_type is LineType.SECTION or next_line_type is LineType.BEGIN_BLOCK_START_END or next_line.strip().startswith(r"\paragraph{"):
         # print(f"No intro after {line_type.name}: {line}")
-        line = add_note(NoteType.MISSING_INTRO, line)
+        line_additions = add_note(NoteType.MISSING_INTRO, line_additions)
         # line = check_spanglish(line)
     
-    return line
+    return line, line_additions
 
 
 
@@ -842,6 +843,62 @@ def process_command_arg1(depth, curr_pos, matches, index, text, to_ignore, to_an
         to_analyze[curr_pos, len(text)] = text[curr_pos: len(text)]
               
 
+def insert_ambiguity_comment(text: str, line_idx: int, sentence_idx: int, reason: str) -> str:
+    lines = text.splitlines()
+    
+    if line_idx >= len(lines):
+        print(f"Missing line at index {line_idx}")
+        return text
+
+    line = lines[line_idx].strip()
+    doc = nlp(line)
+    sentences = [sent.text.strip() for sent in doc.sents]
+
+    if sentence_idx >= len(sentences):
+        print(f"Missing sentence at index {sentence_idx} in line {line_idx}")
+        return text
+
+    # Insert "comment" at the beginning of the target sentence
+    sentences[sentence_idx] = r"\comment{Ambiguity}{" f"{reason}" + "} " + sentences[sentence_idx]
+
+    # Reconstruct the line and text
+    modified_line = ' '.join(sentences)
+    lines[line_idx] = modified_line
+    return '\n'.join(lines)
+
+def add_section_note(text, section_name, suggestion)->str:
+    lines = text.splitlines()
+    pattern = re.compile(rf'^\s*\\(sub)*section\*?\{{\s*{re.escape(section_name)}\s*\}}')
+
+    new_lines = []
+    inserted = False
+
+    i = 0
+    while i < len(lines):
+        new_lines.append(lines[i])
+        if not inserted and pattern.match(lines[i]):
+            # Insert note after the matched section declaration
+            new_lines.append("\n\\notaparaelautor{"+ suggestion + "}\n")
+            inserted = True
+        i += 1
+
+    return "\n".join(new_lines)
+
+
+def add_chapter_note(text: str, suggestion) -> str:
+    lines = text.splitlines()
+    chapter_pattern = re.compile(r'^\s*\\chapter\*?\{.*\}')
+    
+    new_lines = []
+    inserted = False
+
+    for i, line in enumerate(lines):
+        new_lines.append(line)
+        if not inserted and chapter_pattern.match(line):
+            new_lines.append("\n\\notaparaelautor{"+ suggestion + "}\n")
+            inserted = True
+
+    return "\n".join(new_lines)
 
 
 

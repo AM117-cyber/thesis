@@ -3,9 +3,14 @@ import os
 import re
 import spacy
 import sys
+from fireworks.client import Fireworks
+from dotenv import load_dotenv
+            
 
+from Supported_statements.LLM import Fireworks_Api
+from Supported_statements.ambiguity_transitions import check_ambiguity_and_transitions
 from repetition import process_latex_paragraph, process_latex_paragraph1
-from utils import LineType, NoteType, add_note, check_number, fix_cite_usage, format_latex_commands, get_begin_end_block, get_math_block, line_classifier, merge_dicts_by_start_order, process_section_chapter_declaration, remove_inline_comments, sanitize_preamble, separate_latex_commands
+from utils import LineType, NoteType, add_chapter_note, add_note, add_section_note, check_number, fix_cite_usage, format_latex_commands, get_begin_end_block, get_math_block, insert_ambiguity_comment, line_classifier, merge_dicts_by_start_order, process_section_chapter_declaration, jump_inline_comments, sanitize_preamble, separate_latex_commands
 from utils import mark_first_second_person, mark_passive_voice, mark_weasel_spanglish
 
 
@@ -79,6 +84,8 @@ ignore_for_repetition = [
 
 amount_of_comments_for_new_page = 25
 
+load_dotenv()
+
 def process_tex_file():
     """Processes a LaTeX file to find errors in its writing."""
 
@@ -119,11 +126,14 @@ def process_tex_file():
 
 
     file_path = "ejemplo1.tex"
-    output_tex = "Dario.tex"
+    output_tex = "a.tex"
 
 
     new_tex = ""
-
+    text_for_LLM = []
+    line_mapper = {}
+    line_count_for_LLM = 0
+    og_line_count = 1
 
     try:
         with open(file_path, 'r', encoding='utf-8') as file:
@@ -148,8 +158,8 @@ def process_tex_file():
             new_preamble, conflict = sanitize_preamble(preamble, my_commands)
             if conflict:
                 new_tex += "\n\\notaparaelautor{Algunos comandos antes de begin{document} fueron comentados por posibles conflictos}" + "\n"
-
-            doc_content = remove_inline_comments(doc_content)
+                og_line_count += 1
+            doc_content = jump_inline_comments(doc_content)
             doc_content = format_latex_commands(doc_content)
             # Now properly split into lines
             lines = doc_content.split('\n')  # Split on newlines
@@ -165,28 +175,40 @@ def process_tex_file():
                 if not line.strip():  # Skip empty lines
                     i += 1
                     new_tex += "\n"
+                    og_line_count += 1
                     continue
                 
                 line_type = line_classifier(line)
 
                 # Print results based on classification
                 if line_type is LineType.SECTION or line_type is LineType.CHAPTER:
-                    line = process_section_chapter_declaration(lines, i,weasels, spanglish)
+                    text_for_LLM.append(line + "\n")
+                    line_mapper[line_count_for_LLM] = og_line_count
+                    line_count_for_LLM += 1
+                    line, line_notes = process_section_chapter_declaration(lines, i,weasels, spanglish)
                     if not first_paragraph_flag and  "section" in line:
+                        line_mapper[line_count_for_LLM-1] = og_line_count + 2 # porque la nota para missing intro se pone antes de la línea, sumando dos líneas al contador
                         first_paragraph_flag = 1
                         note = add_note(NoteType.CHAPTER_MISSING_INTRO, "")
-                        new_tex += note + line + "\n"
+                        new_tex += note + line + line_notes + "\n"
+                        tmp = (note + line).split("\n")
+                        og_line_count += len((note + line + line_notes).split("\n"))# el último \n indica la línea en la que me voy a parar
                     else:   
-                        new_tex += line + "\n"
+                        og_line_count += len((line + line_notes).split("\n"))
+                        
+                        new_tex += line + line_notes + "\n"
+
                 elif line_type is LineType.COMMAND or line_type is LineType.IMAGE or line_type is LineType.COMMENT or line_type is LineType.BEGIN_BLOCK_START_END:
                     new_tex += line + "\n"
+                    og_line_count += 1
                 elif line_type is LineType.PARAGRAPH:
+
                     # if it is classified as a paragraph then check the following lines to determine its extension
-                    # it will be considered part of the same text until the line reached is blank or starts with \item or \colchunk
+                    # it will be considered part of the same text until the line reached is blank or starts with \item or \colchunk or not a paragraph
                     first_paragraph_flag = 1
                     while i < total_lines-1:
                         next_line = lines[i+1]
-                        if len(next_line) > 0 and not next_line.startswith(r'\item') and not next_line.startswith(r'\colchunk'):
+                        if len(next_line) > 0 and line_classifier(next_line) is LineType.PARAGRAPH and not (next_line.strip().startswith(r'\item') or next_line.strip().startswith(r'\colchunk')):
                             i +=1
                             line += " " + next_line
                         else:
@@ -202,13 +224,20 @@ def process_tex_file():
 
                     
                     line = merge_dicts_by_start_order(to_ignore, to_analyze)
+                    
                     # this method is not considering repeated words inside a comment when it should
-                    p = process_latex_paragraph1(line, ignore_for_repetition)
+                    p, for_LLM = process_latex_paragraph1(line, ignore_for_repetition)
+                    line_mapper[line_count_for_LLM] = og_line_count
+                    text_for_LLM.append(for_LLM + "\n")
+                    line_count_for_LLM += 1
+                    
                     # si en este punto los comments superan la cantidad por página entonces agregamos \newpage
                     new_tex += p + "\n"
-                    if comments >= amount_of_comments_for_new_page:
-                        new_tex += "\n\\notaparaelautor{Salto de línea para tener espacio para los comentarios.}\n\\newpage\n"
-                        comments = 0
+                    og_line_count += len((p).split("\n"))
+                    # if comments >= amount_of_comments_for_new_page:
+                    #     new_tex += "\n\\notaparaelautor{Salto de línea para tener espacio para los comentarios.}\n\\newpage\n"
+                    #     og_line_count += 3
+                    #     comments = 0
                 else: # the line is the beginning of a block that doesn't need revision
                     block = ""
                     if "\\begin" in line:
@@ -217,9 +246,35 @@ def process_tex_file():
                     if line == "\[":
                         block, i = get_math_block(lines, i)
                     new_tex += block + "\n"
+                    og_line_count += len((block).split("\n"))
+                    
                 i += 1
-            # new_tex = check_ambiguity_and_transitions(new_tex)
-            new_tex_content = new_preamble + doc_begin + new_tex + doc_end + post_doc
+
+
+            API_KEY = os.environ.get("FIREWORKS_API_KEY")
+            API_MODEL = os.environ.get("FIREWORKS_MODEL")
+            fw = Fireworks(api_key=API_KEY)  # Fixed variable name (was api_key)
+            model_id = API_MODEL
+            print("LINE MAPPER")
+            for key in line_mapper.keys():
+                print(f"{key}: value: {line_mapper[key]}")
+            print(f"count is: {og_line_count}")
+            fw_llm_client = Fireworks_Api(fw, model_id)
+            ambiguity, transitions, introduction, logical_order = check_ambiguity_and_transitions(text_for_LLM, fw_llm_client, line_mapper)
+            # ambiguity = {(10,1): "Razón"}
+            for key in ambiguity.keys():
+                new_tex = insert_ambiguity_comment(new_tex, key[0], key[1], ambiguity[key])
+            for section in transitions.keys():
+                new_tex = add_section_note(new_tex, section, transitions[section])
+            if introduction:
+                new_tex = add_chapter_note(new_tex, introduction)
+            if logical_order:
+                new_tex = add_chapter_note(new_tex, logical_order)
+            # new_tex = insert_ambiguity_comment(new_tex, 10, 1, "Razón")
+
+
+
+            new_tex_content = new_preamble + doc_begin + new_tex + "\n" + doc_end + post_doc
             with open(output_tex, "w", encoding="utf-8") as f:
                 f.write(new_tex_content)
 
