@@ -275,15 +275,19 @@ def check_starting_commands(text, word, to_analyze, to_ignore):
     
     if modification_needed:
         # Calculate end position (start of word + length of word)
-        first_key = next(iter(to_ignore))
-        first_value = to_ignore.pop(first_key)  # Remove old key
+        first_key_ignore = next(iter(to_ignore))
+        first_key_analyze = next(iter(to_analyze))
+        if first_key_ignore[0] > first_key_analyze[0]:
 
-        new_key = (0, first_key[1])  # Keep the original end
+            first_value = to_ignore.pop(first_key_ignore)  # Remove old key
 
-        # Reinsert with the new key        
-        first_key = next(iter(to_analyze))
-        to_ignore[new_key] = to_analyze[first_key] + first_value
-        first_value = to_analyze.pop(first_key)  # Remove old key
+            new_key = (0, first_key_ignore[1])  # Keep the original end
+
+            # Reinsert with the new key        
+
+            to_ignore[new_key] = to_analyze[first_key_analyze] + first_value
+            first_value = to_analyze.pop(first_key_analyze)  # Remove old key
+    
 
     # no need to sort dicts because the order affected is in to_ignore, which we sort when merging with to_analyze
     return modification_needed
@@ -358,6 +362,9 @@ def highlight_repeated_words_window(text, color_list, window_size = 150, ignore_
     text_length = len(text)
     step = 1  # You can increase this for speed if needed
 
+    if text_length < window_size:
+        window_size = text_length
+
     for start in range(0, text_length - window_size + 1, step):
         end = start + window_size
         # Find words that are fully or partially within the window and valid
@@ -370,6 +377,7 @@ def highlight_repeated_words_window(text, color_list, window_size = 150, ignore_
         for word, count in window_count.items():
             if count >= 2:
                 repeated_in_window.add(word)
+
 
     # Combine with words appearing at least 3 times globally
     target_words = {w for w in word_global_count if word_global_count[w] >= 3 or w in repeated_in_window}

@@ -1,5 +1,7 @@
 import re
+from typing import List, Dict
 from enum import Enum, auto
+import unicodedata
 
 import spacy
 
@@ -16,12 +18,15 @@ class LineType(Enum):
     COMMAND = auto()
     IGNORE = auto()
     COMMENT = auto()
+    VERBATIM_COMMAND = auto()
 
 class CommandType(Enum):
 
     MATH = auto()
     CLOSE_BRACE = auto()
     COMMAND = auto()
+    COMMENT = auto()
+    VERBATIM = auto()
 
 class NoteType(Enum):
     MISSING_INTRO = "Una cosa no debe empezar con una subcosa"
@@ -31,13 +36,57 @@ class NoteType(Enum):
 
 nlp = spacy.load("es_core_news_sm")
 
+
+def strip_accents(text):
+    # Normalize the text to NFKD (decomposes characters)
+    text = unicodedata.normalize('NFKD', text)
+    # Keep only ASCII characters
+    return ''.join(c for c in text if not unicodedata.combining(c))
+
+def find_valid_document_bounds(tex_content):
+    lines = tex_content.splitlines(keepends=True)
+
+    begin_pos = None
+    end_pos = None
+
+    doc_begin_pattern = re.compile(r'\\begin\s*\{\s*document\s*\}')
+    doc_end_pattern = re.compile(r'\\end\s*\{\s*document\s*\}')
+
+    offset = 0  # character position in tex_content
+
+    for line in lines:
+        stripped = line.lstrip()
+
+        # Skip line if it starts with '%' or '\verb'
+        if stripped.startswith('%') or stripped.startswith('\\verb'):
+            offset += len(line)
+            continue
+
+        # Find first valid \begin{document}
+        if begin_pos is None:
+            match = doc_begin_pattern.search(line)
+            if match:
+                begin_pos = offset + match.start()
+
+        # Always update if valid \end{document} found (we want the last one)
+        match = doc_end_pattern.search(line)
+        if match:
+            end_pos = offset + match.end()
+
+        offset += len(line)
+
+    if begin_pos is None or end_pos is None:
+        print("Couldn't find valid \\begin{document} and \\end{document}")
+
+    return begin_pos, end_pos
+
 def fix_cite_usage(latex_text):
     """
     Finds and comments problematic \cite commands where:
     1. Preceded by punctuation (.,;:!?) with optional whitespace
     2. Immediately preceded by any non-whitespace character except ~
     
-    Wraps as: [preceding text] \comment{\cite{content}}{Incorrect citation format}
+    Wraps as: [preceding text] \comentario{\cite{content}}{Incorrect citation format}
     """
     # Pattern to match wrong citations
     pattern = r'''
@@ -54,7 +103,7 @@ def fix_cite_usage(latex_text):
         preceding_char = match.group(2).strip()
         cite_cmd = match.group(3)
         # Insert space between preceding text and comment
-        return f'{preceding_char} \\comment{{{cite_cmd}}}{{Incorrect citation format}}'
+        return f'{preceding_char} \\comentario{{{cite_cmd}}}{{Incorrect citation format}}'
     
     # Apply replacement
     fixed_text = re.sub(
@@ -143,21 +192,55 @@ def merge_dicts_by_start_order(dict1, dict2):
     
     return merged_text
 
+
+def has_participle_termination(text: str) ->bool:
+    return text.lower().endswith(("ado", "ido", "to", "so", "cho", "ados", "idos", "tos", "sos", "chos", "ada", "ida", "ta", "sa", "cha", "adas", "idas", "tas", "sas", "chas"))
+
 def detect_passive_voice(text):
     doc = nlp(text)
     spans = []
 
     for i in range(len(doc) - 1):
         token = doc[i]
+        # if word is a participle should also be marked ad passive voice
+        if ("VerbForm=Part" in token.morph and has_participle_termination(token.text)):
+            if i>0 and not(doc[i-1].text.lower() in ["el", "al", "la", "las", "lo", "los", "un", "una", "unos", "unas"]):
+                span = doc[i:i+1]
+                spans.append((span.start_char, span.end_char))
+            i += 1
+            continue
+
         # Match any form of 'ser' as a VERB (e.g., "es", "fue", "son", "serán")
         if token.lemma_ == "ser" and token.pos_ in ("AUX", "VERB"):
             # Look ahead a few tokens for a past participle
-            for j in range(i + 1, min(i + 2, len(doc))):
+            for j in range(i + 1, min(i + 3, len(doc))):
                 next_token = doc[j]
-                if (next_token.pos_ in ("VERB") and "VerbForm=Part" in next_token.morph) or (next_token.pos_ != "ADJ" and next_token.text.lower().endswith(("ado", "ido", "to", "so", "cho"))):  # Past participle
+                if (next_token.pos_ in ("VERB") and "VerbForm=Part" in next_token.morph and has_participle_termination(next_token.text)):
                     span = doc[i:j + 1]
                     spans.append((span.start_char, span.end_char))
+                    i = j+1
                     break
+                elif next_token.text.lower() in ["el", "la", "las", "lo", "los", "un", "una", "unos", "unas"]:
+                    break
+                prev_token = doc[j-1]
+                if (next_token.pos_ == "ADJ" and prev_token.pos_ == "ADV"):
+                    tmp_text = token.text
+                    for k in range(i+1, min(i + 4, len(doc))):
+                        if (j-1) != k:
+                            tmp_text += " "+ doc[k].text 
+                    tmp_doc = nlp(tmp_text)
+                    for k in range(1, len(tmp_doc)):
+                        if (tmp_doc[k].pos_ in ("VERB") and "VerbForm=Part" in tmp_doc[k].morph and has_participle_termination(tmp_doc[k].text)):
+                            span = doc[i:j + 1]
+                            spans.append((span.start_char, span.end_char))
+                            i = j+1
+                            break
+                if (next_token.pos_ != "ADJ" and has_participle_termination(next_token.text)):  # Past participle
+                    span = doc[i:j + 1]
+                    spans.append((span.start_char, span.end_char))
+                    i = j+1
+                    break
+
     return spans
 
 def detectar_primera_segunda_persona(texto):
@@ -227,7 +310,7 @@ def mark_first_second_person(doc_content:str, comments) ->str:
         comment_text = "{Escribir en 3ra persona} "
         if curr_span[1] == "ADJ":
             comment_text = "{Adjetivo} "
-        wrapped = '\comment {'+original+'}' + comment_text
+        wrapped = '\comentario {'+original+'}' + comment_text
         comments +=1
         doc_content = doc_content[:real_start] + wrapped + doc_content[real_end:]
         offset += len(wrapped) - (end - start)
@@ -243,45 +326,91 @@ def mark_passive_voice(doc_content:str, comments) -> str:
         real_start = start + offset
         real_end = end + offset
         original = doc_content[real_start:real_end]
-        wrapped = '\comment {'+original+'}{Voz pasiva} '
+        wrapped = '\comentario {'+original+'}{Voz pasiva} '
         comments +=1
         doc_content = doc_content[:real_start] + wrapped + doc_content[real_end:]
         offset += len(wrapped) - (end - start)
     return doc_content, comments
 
+def mark_weasel_spanglish(weasel_words, spanglish_words, doc_content: str, comments: int, llm=None) -> tuple[str, int]:
 
-def mark_weasel_spanglish(weasel_words, spanglish_words, doc_content:str, comments) -> str:
-    
-    for word in weasel_words:
-        pattern = r'\b' + re.escape(word) + r'\b'
-        new_content, num_subs = re.subn(
-            pattern,
-            lambda m: r'\comadreja{' + m.group(0) + '}',
-            doc_content,
-            flags=re.IGNORECASE
-        )
-        if num_subs > 0:
-            doc_content = new_content
-            comments += num_subs
+    # Find sentence boundaries (basic split on ., ?, !)
+    sentence_endings = re.compile(r'(?<=[.!?])\s+')
 
+    # Split the document into sentences (approximation)
+    sentences = sentence_endings.split(doc_content)
+
+    for i, sentence in enumerate(sentences):
+        for word in weasel_words:
+            pattern = r'\b' + re.escape(word) + r'\b'
+
+            def weasel_match(m):
+                matched_word = m.group(0)
+                if llm is None:
+                    # Mark it directly
+                    nonlocal comments
+                    comments += 1
+                    return r'\comadreja{' + matched_word + '}'
+                else:
+                    # Ask the LLM whether the word is vague in this sentence
+                    prompt = (
+                        f"Analiza la siguiente oración y responde si la palabra “{matched_word}” está se usa de forma ambigua, imprecisa o subjetiva."
+                        f"No se considera imprecisa si la palabra tiene un significado técnico, estadístico o específico dentro del contexto de la oración."
+                        f"Responde solamente con “Sí” si es ambigua, imprecisa en el contexto o “No” si no lo es.\n\nOración: \"{sentence.strip()}\""
+                    )
+
+                    # prompt = (
+                    #     f"Analiza la siguiente oración y dime si la palabra “{matched_word}” está siendo usada "
+                    #     f"de forma ambigua, imprecisa o subjetiva. "
+                    #     f"Responde solo con 'Sí' o 'No'.\n\nOración: \"{sentence.strip()}\""
+                    # )
+                    try:
+                        response = llm.ask_llm(prompt).lower()
+                        if 'no' in response:
+                            return matched_word 
+
+                        else:
+                            comments += 1
+                            return r'\comadreja{' + matched_word + '}'
+                    except Exception as e:
+                        # If there's an issue with the LLM, fall back to marking
+                        comments += 1
+                        return r'\comadreja{' + matched_word + '}'
+
+            # Apply substitution to the sentence only
+            new_sentence = re.sub(pattern, weasel_match, sentence, flags=re.IGNORECASE)
+
+            if new_sentence != sentence:
+                sentences[i] = new_sentence
+
+    # Reconstruct the document
+    doc_content = ' '.join(sentences)
+
+    # Handle spanglish words (always mark them directly)
     for word in spanglish_words:
         pattern = r'\b' + re.escape(word) + r'\b'
         new_content, num_subs = re.subn(
             pattern,
-            lambda m: r'\comment {' + m.group(0) + '}{Anglicismo}',
+            lambda m: r'\comentario {' + m.group(0) + '}{Anglicismo}',
             doc_content,
             flags=re.IGNORECASE
         )
         if num_subs > 0:
             doc_content = new_content
             comments += num_subs
+
     return doc_content, comments
+
 
 
 def line_classifier(line: str) -> LineType:
     """Classifies a LaTeX line into different types, handling leading commands."""
     line = line.strip()
-    print(line)
+    # print(line)
+    if re.match(r'\\verb\*?(?P<delim>.)(.*?)(?P=delim)', line, re.DOTALL):
+        return LineType.VERBATIM_COMMAND
+    if re.match(r'^\s*%', line):
+        return LineType.COMMENT
     # Handle cases like "\centering \begin{figure}"
     if '\\begin{' in line:
         # Extract just the \begin{...} part if there are preceding commands
@@ -290,8 +419,7 @@ def line_classifier(line: str) -> LineType:
             # Reconstruct just the begin statement for classification
             begin_part = f"\\begin{{{begin_match.group(1)}}}"
             line = begin_part
-    if re.match(r'^\s*%', line):
-        return LineType.COMMENT
+
     # Check for chapter commands (highest priority)
     if re.match(r'^\s*\\(chapter|part)\*?\{', line):
         return LineType.CHAPTER
@@ -301,7 +429,7 @@ def line_classifier(line: str) -> LineType:
         return LineType.SECTION
 
     # Check for various commands
-    if re.match(r'^\s*\\(maketitle|tableofcontents|listoffigures|listoftables|usepackage|documentclass|setlength|addbibresource|hypersetup|large|setcounter|newpage)', line, re.IGNORECASE):
+    if re.match(r'^\s*\\(maketitle|tableofcontents|listoffigures|listoftables|usepackage|documentclass|setlength|addbibresource|hypersetup|large|setcounter|newpage|par|newline|\\|paragraph)', line, re.IGNORECASE):
         return LineType.COMMAND
 
     # Check for image inclusion
@@ -324,10 +452,12 @@ def line_classifier(line: str) -> LineType:
     if re.match(r'^\\begin\{equation|\begin\{align|\begin\{gather|\begin\{multiline', line, re.IGNORECASE):
         return LineType.MATH
 
-    if line == "\[":
+    if line.strip().startswith(r"\[")  or line.strip().startswith(r"\]"):
         return LineType.MATH
 
-    if re.match(r'^\\begin\{(document|abstract|frame|quote|multicols|parcolumns|itemize|enumerate|description)', line, re.IGNORECASE):
+    if re.match(r'^\\begin\{(document|abstract|frame|quote|multicols|parcolumns|itemize|enumerate|description|verbatim|center|flushleft|flushright|quotation)', line, re.IGNORECASE):
+        return LineType.BEGIN_BLOCK_START_END
+    if re.match(r'^\\end\{(document|abstract|frame|quote|multicols|parcolumns|itemize|enumerate|description|verbatim|center|flushleft|flushright|quotation)', line, re.IGNORECASE):
         return LineType.BEGIN_BLOCK_START_END
     # Check for other non-text environments (excluding document, abstract, etc.)
     if re.match(r'^\\begin\{', line, re.IGNORECASE):
@@ -369,6 +499,40 @@ def add_note(type: NoteType,line: str) -> str:
 
 def check_spanglish(line: str) -> str:
     spanglish_words = ["parsear, revolver"]
+
+def jump_verb_commands(text: str) -> str:
+    """
+    Moves inline LaTeX \verb to a new line.
+    """
+    processed_lines = []
+
+    for line in text.splitlines():
+        curr_index = 0
+        matches = list(re.finditer(r'(\\verb\*?)(.)(.*?)(\2)', line))
+
+        if matches:
+            for match in matches:
+                verbatim_start_index = match.start()
+                content_before_verbatim = line[curr_index:verbatim_start_index]
+                verbatim_part = line[verbatim_start_index:match.end()]
+
+                if content_before_verbatim.strip():  # Ensure non-whitespace content before \verb
+                    processed_lines.append(content_before_verbatim.rstrip())
+                    processed_lines.append(verbatim_part)
+                else:
+                    processed_lines.append(line[curr_index:])  # Keep the full line if it’s only spaces
+
+                curr_index = match.end()
+            remainder = line[curr_index:]
+            if len(remainder) > 0:
+                processed_lines.append(remainder)
+        else:
+            # Explicitly append lines that contain only whitespace
+            processed_lines.append(line)
+
+    return '\n'.join(processed_lines)
+
+
 
 def jump_inline_comments(text: str) -> str:
     """
@@ -424,115 +588,150 @@ def jump_inline_comments(text: str) -> str:
     return '\n'.join(processed_lines)
 
 
-def format_latex_commands(text: str) -> str:
-    """
-    Finds specific LaTeX commands and adds line breaks around them,
-    but only on lines that are not LaTeX comments.
 
-    A LaTeX comment is any line that starts with a '%' character,
-    potentially preceded by whitespace.
+def format_latex_commands(text: str) -> List[Dict]:
+    patterns = [
+        # \begin{...}, \end{...}
+        (r'\\begin\{[^\}]+\}', 'begin'),
+        (r'\\end\{[^\}]+\}', 'end'),
 
-    The function finds the following commands:
-    - \\begin{...}, \\end{...}
-    - \\chapter{...}, \\section{...}, \\subsection{...}, \\subsubsection{...}, etc.
-    - \\[, \\]
-    - \\item
+        # Sectioning commands including \paragraph
+        (r'\\(?:chapter|section|subsection|subsubsection|paragraph)\{[^\}]*\}', 'sectioning'),
 
-    If a command is found on a non-commented line and it is preceded by a
-    non-whitespace character on that same line, a line break is added before it.
-    A line break is also added after the command's body, except for the \\item
-    command.
+        # Display math: \[ and \]
+        (r'(?<!\\)\\\[', 'math_open'),   # Match \[ only if not preceded by another backslash
+        (r'(?<!\\)\\\]', 'math_close'),
 
-    Examples:
-    - 'abcd \\section{...}' becomes 'abcd\\n\\section{...}\\n'
-    - '    \\section{...}' (at start of a line) remains unchanged.
-    - '% my notes \\section{...}' remains unchanged.
+        # Line breaks: \\ and \\[<length>] but NOT \\[
+        (r'\\\\(\[[^\]]*\])?', 'linebreak'),
 
-    Args:
-        text: The input string containing LaTeX code.
+        # \item
+        (r'\\item\b', 'item'),
 
-    Returns:
-        A new string with formatted line breaks.
-    """
-    # --- The original regex logic, which is perfect for processing a single line ---
+        # \par (not part of longer command)
+        (r'(?<!\\)\\par\b', 'par'),
 
-    # This part of the pattern defines all the commands we want to find.
-    # It is wrapped in parentheses to become a capturing group (group 2).
-    command_pattern_group = (
-        r'('
-        r'\\(?:begin|end)\{[a-zA-Z0-9*]+\}'             # \begin{...} or \end{...}
-        # Updated to handle starred versions like \section*{...}
-        r'|\\(?:chapter|(?:sub)*section)\*?\{.*?\}'
-        r'|\\item'                                      # \item
-        r'|\\\[|\\\]'                                   # \[ or \]
-        r')'
-    )
-
-    # The full pattern now does two things:
-    # 1. `(\S.*?)`: This is group 1. It captures any preceding text on the same line.
-    # 2. `command_pattern_group`: This is group 2, which captures the command itself.
-    pattern = re.compile(r'(\S.*?)' + command_pattern_group)
-
-    def replacer(match):
-        """
-        This function is called for each match and defines the replacement.
-        """
-        preceding_text = match.group(1)
-        command = match.group(2)
-        result = preceding_text + '\n' + command
-        if not command.startswith(r'\item'):
-            result += '\n'
-        return result
-
-    # --- New logic to process the text line by line ---
+        # \newline
+        (r'\\newline\b', 'newline'),
+    ]
 
     lines = text.splitlines()
     processed_lines = []
-
     for line in lines:
-        # Check if the line is a comment. A comment starts with '%',
-        # ignoring any leading whitespace.
-        if line.strip().startswith('%'):
-            # If it's a comment, add it to our results without changes.
+        if line.strip().startswith('%') or line.strip().startswith(r'\verb'):
             processed_lines.append(line)
-        else:
-            # If it's not a comment, apply the regex substitution to the line.
-            processed_line = pattern.sub(replacer, line)
-            processed_lines.append(processed_line)
+            continue
+        matches = []
+        for pattern, label in patterns:
+            for match in re.finditer(pattern, line):
+                matches.append({
+                    'start': match.start(),
+                    'end': match.end(),
+                    'command': label,
+                    'match': match.group()
+                })
 
-    # Join the processed lines back into a single string.
-    # splitlines() removes newlines, so we must add them back.
+        # Sort by start position
+        sorted_matches = sorted(matches, key=lambda x: x['start'])
+        curr_index = 0
+        valid_command_start = 0
+        for command in sorted_matches:
+            if command['start'] >= valid_command_start:
+                if len(line[curr_index: command['start']].strip()) > 0:
+                    processed_lines.append(line[curr_index: command['start']])
+                processed_lines.append(line[command['start']: command['end']])
+                curr_index = command['end']
+                valid_command_start = command['end']
+        if curr_index != len(line) or len(line) < 1:
+            processed_lines.append(line[curr_index:])
     return '\n'.join(processed_lines)
 
-# def get_begin_end_block(lines, index): # if the block is not to be ignored I gather each paragraph and process it with th corresponding method
-#     line = lines[index]
-#     # Handle cases like "\centering \begin{figure}"
-#     # Extract just the \begin{...} part if there are preceding commands
-#     begin_match = re.search(r'\\begin\{([^}]*)\}', line)
-#     if begin_match:
-#         # Reconstruct just the begin statement for classification
-#         environment = begin_match.group(1)
-#     if environment:
-#         begin_end_block = [line]  # Start with the \begin line
-#         index += 1
-#         depth = 1  # Track nested environments
-        
-#         while index < len(lines) and depth > 0:
-#             current_line = lines[index]
-#             begin_end_block.append(current_line)    
-            
-#             # Check for nested environments
-#             if '\\begin\{' in line:
-#                 depth += 
-#             if re.match(r'^\\begin\{', current_line):
-#                 depth += 1
-#             elif re.match(r'^\\end\{' + re.escape(environment) + r'\}', current_line):
-#                 depth -= 1
-            
-#             index += 1
-#         begin_end_block = '\n'.join(begin_end_block)  # Preserve original line breaks
-#         return begin_end_block, index-1
-#     return line, index-1
+
+# def format_latex_commands(text: str) -> str:
+#     """
+#     Finds specific LaTeX commands and adds line breaks around them,
+#     but only on lines that are not LaTeX comments or verbatim.
+
+#     A LaTeX comment is any line that starts with a '%' character,
+#     potentially preceded by whitespace.
+
+#     The function finds the following commands:
+#     - \\begin{...}, \\end{...}
+#     - \\chapter{...}, \\section{...}, \\subsection{...}, \\subsubsection{...}, etc.
+#     - \\[, \\]
+#     - \\item
+#     - \par (must not be part of longer command)
+#     - \\ or \\[<length>]
+#     - \newline
+#     - \paragraph
+
+#     If a command is found on a non-commented line and it is preceded by a
+#     non-whitespace character on that same line, a line break is added before it.
+#     A line break is also added after the command's body, except for the \\item
+#     command.
+
+#     Examples:
+#     - 'abcd \\section{...}' becomes 'abcd\\n\\section{...}\\n'
+#     - '    \\section{...}' (at start of a line) remains unchanged.
+#     - '% my notes \\section{...}' remains unchanged.
+
+#     Args:
+#         text: The input string containing LaTeX code.
+
+#     Returns:
+#         A new string with formatted line breaks.
+#     """
+#     # --- The original regex logic, which is perfect for processing a single line ---
+
+#     # This part of the pattern defines all the commands we want to find.
+#     # It is wrapped in parentheses to become a capturing group (group 2).
+#     command_pattern_group = (
+#         r'('
+#         r'\\(?:begin|end)\{[a-zA-Z0-9*]+\}'                         # \begin{...}, \end{...}
+#         r'|\\(?:chapter|section|subsection|subsubsection'           # sectioning commands
+#         r'|paragraph|subparagraph)\*?\{.*?\}'
+#         r'|\\par\b'                                                 # \par (must not be part of longer command)
+#         r'|\\\\(?:\[[^\]]*\])?'                                     # \\ or \\[<length>]
+#         r'|\\newline\b'                                             # \newline
+#         r'|\\\['                                                    # \[
+#         r'|\\\]'                                                    # \]
+#         r')'
+#     )
+#     # The full pattern now does two things:
+#     # 1. `(\S.*?)`: This is group 1. It captures any preceding text on the same line.
+#     # 2. `command_pattern_group`: This is group 2, which captures the command itself.
+#     pattern = re.compile(r'(\S.*?)' + command_pattern_group)
+
+#     def replacer(match):
+#         """
+#         This function is called for each match and defines the replacement.
+#         """
+#         preceding_text = match.group(1)
+#         command = match.group(2)
+#         result = preceding_text + '\n' + command
+#         if not command.startswith(r'\item'):
+#             result += '\n'
+#         return result
+
+#     # --- New logic to process the text line by line ---
+
+#     lines = text.splitlines()
+#     processed_lines = []
+
+#     for line in lines:
+#         # Check if the line is a comment. A comment starts with '%',
+#         # ignoring any leading whitespace.
+#         if line.strip().startswith('%') or line.strip().startswith(r'\verb'):
+#             # If it's a comment, add it to our results without changes.
+#             processed_lines.append(line)
+#         else:
+#             # If it's not a comment, apply the regex substitution to the line.
+#             processed_line = pattern.sub(replacer, line)
+#             processed_lines.append(processed_line)
+
+#     # Join the processed lines back into a single string.
+#     # splitlines() removes newlines, so we must add them back.
+#     return '\n'.join(processed_lines)
 
 
 def get_begin_end_block(lines, index):
@@ -655,7 +854,9 @@ def process_section_chapter_declaration(lines, i, weasels, spanglish):
 
 
 
-
+    '''It receives a dictionay of envs {[], (), {}, etc} in which each env is assign True or False to identify if the content of them should be ignored.
+        When it finds them (we assume all the envs appear) it adds them to ignore or analyze accordingly, while adding to analyze the spaces between them.
+        This method is only for commands to analyze'''
 
 
 
@@ -709,14 +910,12 @@ def call_optional_method(text, position, envs, to_ignore, to_analyze):
 
 
 def commands_to_consider_method(command, text, position, matches, index, to_ignore, to_analyze):
-    '''It receives a dictionay of envs {[], (), {}, etc} in which each env is assign True or False to identify if the content of them should be ignored.
-        When it finds them (we assume all the envs appear) it adds them to ignore or analyze accordingly, while adding to analyze the spaces between them.
-        This method is only for commands to analyze'''
+
 
     # by default I will consider the content of first {} to analyze
 
-    #textbf', 'hl','comment', 'textcolor
-    if command == "comment":
+    #textbf', 'hl','comentario', 'textcolor
+    if command == "comentario":
         # consider first {} and ignore second {}
         new_position, character = get_first_non_empty_char(text, position)
         if position != new_position:
@@ -781,6 +980,11 @@ def separate_latex_commands(text):
         re.VERBOSE
     )
 
+    commented_text_pattern = re.compile(r'%[^\n]*')
+
+    verb_pattern = re.compile(r'\\verb\*?(?P<delim>.)(.*?)(?P=delim)', re.DOTALL)
+
+
     # Matches math environments
     math_pattern = re.compile(
         r'(?P<math>\$\$.*?\$\$|\$.*?\$|\\\[.*?\\\]|\\\(.*?\\\))',
@@ -790,6 +994,10 @@ def separate_latex_commands(text):
     brace_end = re.compile(r'}')
 
     matches = {}
+    for m in commented_text_pattern.finditer(text):
+        matches[m.span()] = [CommandType.COMMENT]
+    for m in verb_pattern.finditer(text):
+        matches[m.span()] = [CommandType.VERBATIM]
     for m in command_pattern.finditer(text):
         matches[m.span()] = [CommandType.COMMAND]
     for m in math_pattern.finditer(text):
@@ -805,7 +1013,7 @@ def separate_latex_commands(text):
 
 
 def process_command_arg1(depth, curr_pos, matches, index, text, to_ignore, to_analyze):
-    commands_to_consider = ['textbf', 'textit', 'hl','comment', 'textcolor', 'comadreja']
+    commands_to_consider = ['textbf', 'textit', 'hl','comentario', 'textcolor', 'comadreja', 'fbox', 'framebox']
     matches = list(matches) 
     # matches elements are in the form: [[start, end], type]
     index = index
@@ -819,6 +1027,10 @@ def process_command_arg1(depth, curr_pos, matches, index, text, to_ignore, to_an
         if valid_text != "":
             to_analyze[curr_pos, match[0][0]] = valid_text
         curr_pos = match[0][1]
+        if match[1][0] is CommandType.VERBATIM:
+            to_ignore[match[0][0], match[0][1]] = text[match[0][0]: match[0][1]]
+        if match[1][0] is CommandType.COMMENT:
+            to_ignore[match[0][0], match[0][1]] = text[match[0][0]: match[0][1]]
         if match[1][0] is CommandType.MATH:
             to_ignore[match[0][0], match[0][1]] = text[match[0][0]: match[0][1]] # fix math
         if match[1][0] is CommandType.CLOSE_BRACE:
@@ -856,10 +1068,11 @@ def insert_ambiguity_comment(text: str, line_idx: int, sentence_idx: int, reason
 
     if sentence_idx >= len(sentences):
         print(f"Missing sentence at index {sentence_idx} in line {line_idx}")
+        print(f"sentences amount: {len(sentences)}")
         return text
 
     # Insert "comment" at the beginning of the target sentence
-    sentences[sentence_idx] = r"\comment{Ambiguity}{" f"{reason}" + "} " + sentences[sentence_idx]
+    sentences[sentence_idx] = r"\comentario{Ambiguity}{" f"{reason}" + "} " + sentences[sentence_idx]
 
     # Reconstruct the line and text
     modified_line = ' '.join(sentences)

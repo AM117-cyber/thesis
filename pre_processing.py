@@ -1,21 +1,22 @@
 from datetime import datetime
 import os
-import re
-import spacy
 import sys
-from fireworks.client import Fireworks
+# from fireworks.client import Fireworks
 from dotenv import load_dotenv
+import google.generativeai as genai
             
 
-from Supported_statements.LLM import Fireworks_Api
+from Supported_statements.LLM import Fireworks_Api, Gemini_Api
 from Supported_statements.ambiguity_transitions import check_ambiguity_and_transitions
 from repetition import process_latex_paragraph, process_latex_paragraph1
-from utils import LineType, NoteType, add_chapter_note, add_note, add_section_note, check_number, fix_cite_usage, format_latex_commands, get_begin_end_block, get_math_block, insert_ambiguity_comment, line_classifier, merge_dicts_by_start_order, process_section_chapter_declaration, jump_inline_comments, sanitize_preamble, separate_latex_commands
+from utils import LineType, NoteType, add_chapter_note, add_note, add_section_note, check_number, find_valid_document_bounds, fix_cite_usage, format_latex_commands, get_begin_end_block, get_math_block, insert_ambiguity_comment, jump_verb_commands, line_classifier, merge_dicts_by_start_order, process_section_chapter_declaration, jump_inline_comments, sanitize_preamble, separate_latex_commands, strip_accents
 from utils import mark_first_second_person, mark_passive_voice, mark_weasel_spanglish
 
 
 ###############################################
 ################# WEASEL WORDS ################
+
+# significativo, completamente, se estima que, unos, unas, cualquier, regular, creciente
 weasels = [
     "a largo plazo", "a lo mejor", "a menudo", "a veces", "al parecer", 
     "muchos", "muchas", "diversos", "diversas", "muy", "bastante", 
@@ -39,7 +40,7 @@ weasels = [
     "ha revolucionado",  "concisas"
 ]
 
-spanglish = ["parsear", "remover", "fitness", "mapearse", "tag", "script"]
+spanglish = ["parsear", "remover", "fitness", "mapearse", "tag", "script", "abstract","background","best seller","ceo","fast food", "hacker","lobby","ranking", "selfie", "software", "zapping"]
 
 
 
@@ -89,44 +90,46 @@ load_dotenv()
 def process_tex_file():
     """Processes a LaTeX file to find errors in its writing."""
 
-    # try:
-    #     file_path = sys.argv[1]
-    # except IndexError:
-    #     print("Error: No se ha especificado el fichero de entrada.")
-    #     sys.exit(1)
+    try:
+        file_path = sys.argv[1]
+        use_LLM = bool(sys.argv[2] == "True")
+        
+    except IndexError:
+        print("Error: No se ha especificado el fichero de entrada.")
+        sys.exit(1)
 
-    # # Define the base directory for revisions
-    # revisions_dir = "revisiones"
+    # Define the base directory for revisions
+    revisions_dir = "revisiones"
 
-    # # Ensure the base directory exists
-    # os.makedirs(revisions_dir, exist_ok=True)
+    # Ensure the base directory exists
+    os.makedirs(revisions_dir, exist_ok=True)
 
-    # # Get the current date in yyyy-mm-dd format
-    # today = datetime.now().strftime("%Y-%m-%d")
+    # Get the current date in yyyy-mm-dd format
+    today = datetime.now().strftime("%Y-%m-%d")
 
-    # # Create the path for today's folder inside revisiones
-    # output_folder = os.path.join(revisions_dir, today)
-    # os.makedirs(output_folder, exist_ok=True)  # Ensure the directory exists
+    # Create the path for today's folder inside revisiones
+    output_folder = os.path.join(revisions_dir, today)
+    os.makedirs(output_folder, exist_ok=True)  # Ensure the directory exists
 
-    # # Determine output file name
-    # if len(sys.argv) > 2:
-    #     output_tex = os.path.join(output_folder, sys.argv[2])
-    # else:
-    #     base_name, ext = os.path.splitext(os.path.basename(file_path))
-    #     output_base = f"{base_name}-revisado-{today}"
-    #     output_ext = ext if ext else ".tex"
-    #     output_tex = os.path.join(output_folder, f"{output_base}{output_ext}")
+    # Determine output file name
+    if len(sys.argv) > 3:
+        output_tex = os.path.join(output_folder, sys.argv[3])
+    else:
+        base_name, ext = os.path.splitext(os.path.basename(file_path))
+        output_base = f"{base_name}-revisado-{today}"
+        output_ext = ext if ext else ".tex"
+        output_tex = os.path.join(output_folder, f"{output_base}{output_ext}")
 
-    #     # Ensure unique file name
-    #     version = 1
-    #     while os.path.exists(output_tex):
-    #         output_tex = os.path.join(output_folder, f"{output_base}v{version}{output_ext}")
-    #         version += 1
+        # Ensure unique file name
+        version = 1
+        while os.path.exists(output_tex):
+            output_tex = os.path.join(output_folder, f"{output_base}v{version}{output_ext}")
+            version += 1
 
 
 
-    file_path = "ejemplo1.tex"
-    output_tex = "a.tex"
+    # file_path = "ejemplo1.tex"
+    # output_tex = "a.tex"
 
 
     new_tex = ""
@@ -134,35 +137,50 @@ def process_tex_file():
     line_mapper = {}
     line_count_for_LLM = 0
     og_line_count = 1
+    if use_LLM:
+        gemini_llm_client = Gemini_Api("gemini-1.5-flash")
+    else:
+        gemini_llm_client = None
 
     try:
         with open(file_path, 'r', encoding='utf-8') as file:
-
             tex_content = file.read().strip()
+            tex_content = jump_verb_commands(tex_content)
+            tex_content = jump_inline_comments(tex_content)
 
             my_commands = [r"\usepackage[dvipsnames]{xcolor}",r"\input{word-comments.tex}"]
 
-            doc_pattern = re.compile(r"(\\begin\{document\})(.*?)(\\end\{document\})", re.DOTALL)
-            match = doc_pattern.search(tex_content)
-            if not match:
-                print("Error: Couldn't find both \\begin{document} and \\end{document} in the file.")
-                sys.exit(1)
+            # doc_pattern = re.compile(r"(\\begin\{document\})(.*?)(\\end\{document\})", re.DOTALL)
+            # match = doc_pattern.search(tex_content)
+            # if not match:
+            #     print("Error: Couldn't find both \\begin{document} and \\end{document} in the file.")
+            #     sys.exit(1)
+            
+            begin_pos, end_pos = find_valid_document_bounds(tex_content)
+            
+            if begin_pos:
 
-            preamble = tex_content[:match.start(1)]
-            doc_begin = match.group(1)
-            doc_content = match.group(2)
-            doc_end = match.group(3)
-            post_doc = tex_content[match.end(3):]
+                preamble = tex_content[:begin_pos]
+                doc_begin = tex_content[begin_pos:begin_pos + len(r'\begin{document}')]
+                doc_content = tex_content[begin_pos + len(r'\begin{document}'):end_pos - len(r'\end{document}')]
+                doc_end = tex_content[end_pos - len(r'\end{document}'):end_pos]
+                post_doc = tex_content[end_pos:]
+            else:
+                preamble = ""
+                doc_begin = ""
+                doc_content = tex_content # se considera todo como un capítulo sin \begi{document} - \end{document}
+                doc_end = ""
+                post_doc = ""
             comments = 0
-
+            
             new_preamble, conflict = sanitize_preamble(preamble, my_commands)
             if conflict:
                 new_tex += "\n\\notaparaelautor{Algunos comandos antes de begin{document} fueron comentados por posibles conflictos}" + "\n"
                 og_line_count += 1
-            doc_content = jump_inline_comments(doc_content)
+
             doc_content = format_latex_commands(doc_content)
             # Now properly split into lines
-            lines = doc_content.split('\n')  # Split on newlines
+            lines = doc_content.splitlines()
             lines = [line.rstrip('\n') for line in lines]  # Remove any trailing newlines
             
             total_lines = len(lines)
@@ -182,6 +200,7 @@ def process_tex_file():
 
                 # Print results based on classification
                 if line_type is LineType.SECTION or line_type is LineType.CHAPTER:
+                    # text_for_LLM.append(strip_accents(line) + "\n")
                     text_for_LLM.append(line + "\n")
                     line_mapper[line_count_for_LLM] = og_line_count
                     line_count_for_LLM += 1
@@ -198,7 +217,7 @@ def process_tex_file():
                         
                         new_tex += line + line_notes + "\n"
 
-                elif line_type is LineType.COMMAND or line_type is LineType.IMAGE or line_type is LineType.COMMENT or line_type is LineType.BEGIN_BLOCK_START_END:
+                elif line_type is LineType.COMMAND or line_type is LineType.IMAGE or line_type is LineType.COMMENT or line_type is LineType.BEGIN_BLOCK_START_END or line_type is LineType.VERBATIM_COMMAND:
                     new_tex += line + "\n"
                     og_line_count += 1
                 elif line_type is LineType.PARAGRAPH:
@@ -208,7 +227,24 @@ def process_tex_file():
                     first_paragraph_flag = 1
                     while i < total_lines-1:
                         next_line = lines[i+1]
-                        if len(next_line) > 0 and line_classifier(next_line) is LineType.PARAGRAPH and not (next_line.strip().startswith(r'\item') or next_line.strip().startswith(r'\colchunk')):
+                        next_line_type = line_classifier(next_line)
+                        if (
+                            len(next_line) > 0 and
+                            (
+                                next_line_type is LineType.PARAGRAPH or
+                                next_line_type is LineType.COMMENT or
+                                next_line_type is LineType.VERBATIM_COMMAND
+                            ) and
+                            not (
+                                next_line.strip().startswith(r'\item') or
+                                next_line.strip().startswith(r'\colchunk') or
+                                next_line.strip().startswith(r'\par') or
+                                next_line.strip().startswith(r'\newline') or
+                                next_line.strip().startswith(r'\\') or
+                                next_line.strip().startswith(r'\paragraph')
+                            )
+                        ):
+
                             i +=1
                             line += " " + next_line
                         else:
@@ -219,7 +255,8 @@ def process_tex_file():
                         # dentro de estos métodos vamos a aumentar el contador de comments
                         to_analyze[key], comments = mark_passive_voice(to_analyze[key], comments)
                         to_analyze[key], comments = mark_first_second_person(to_analyze[key], comments) # Separar cuando se encuentra 1ra, 2da persona o adjetivo
-                        to_analyze[key], comments = mark_weasel_spanglish(weasels, spanglish, to_analyze[key], comments)
+                        
+                        to_analyze[key], comments = mark_weasel_spanglish(weasels, spanglish, to_analyze[key], comments, gemini_llm_client)
 
 
                     
@@ -229,6 +266,7 @@ def process_tex_file():
                     p, for_LLM = process_latex_paragraph1(line, ignore_for_repetition)
                     line_mapper[line_count_for_LLM] = og_line_count
                     text_for_LLM.append(for_LLM + "\n")
+                    # text_for_LLM.append(strip_accents(for_LLM) + "\n")
                     line_count_for_LLM += 1
                     
                     # si en este punto los comments superan la cantidad por página entonces agregamos \newpage
@@ -250,30 +288,30 @@ def process_tex_file():
                     
                 i += 1
 
-
-            API_KEY = os.environ.get("FIREWORKS_API_KEY")
-            API_MODEL = os.environ.get("FIREWORKS_MODEL")
-            fw = Fireworks(api_key=API_KEY)  # Fixed variable name (was api_key)
-            model_id = API_MODEL
             print("LINE MAPPER")
             for key in line_mapper.keys():
                 print(f"{key}: value: {line_mapper[key]}")
             print(f"count is: {og_line_count}")
-            fw_llm_client = Fireworks_Api(fw, model_id)
-            ambiguity, transitions, introduction, logical_order = check_ambiguity_and_transitions(text_for_LLM, fw_llm_client, line_mapper)
-            # ambiguity = {(10,1): "Razón"}
-            for key in ambiguity.keys():
-                new_tex = insert_ambiguity_comment(new_tex, key[0], key[1], ambiguity[key])
-            for section in transitions.keys():
-                new_tex = add_section_note(new_tex, section, transitions[section])
-            if introduction:
-                new_tex = add_chapter_note(new_tex, introduction)
-            if logical_order:
-                new_tex = add_chapter_note(new_tex, logical_order)
-            # new_tex = insert_ambiguity_comment(new_tex, 10, 1, "Razón")
 
+            if use_LLM:
+                ambiguity, transitions, introduction, logical_order = check_ambiguity_and_transitions(text_for_LLM, gemini_llm_client, line_mapper)
+                # print("LLegué!!")
+                # ambiguity = {(10,1): "Razón"}
+                for key in sorted(ambiguity.keys(), key=lambda x: (x[0], x[1]), reverse=True):
+                    new_tex = insert_ambiguity_comment(new_tex, key[0] - 1, key[1], ambiguity[key])
 
+                for section in transitions.keys():
+                    # print("Transitions reached!!!!")
+                    new_tex = add_section_note(new_tex, section, transitions[section])
+                if introduction:
+                    # print("INTRO!!!!")
+                    new_tex = add_chapter_note(new_tex, introduction)
+                if logical_order:
+                    # print("logical!!!!")
+                    new_tex = add_chapter_note(new_tex, logical_order)
+            
 
+            
             new_tex_content = new_preamble + doc_begin + new_tex + "\n" + doc_end + post_doc
             with open(output_tex, "w", encoding="utf-8") as f:
                 f.write(new_tex_content)
@@ -290,11 +328,11 @@ def process_tex_file():
         print(f"Error processing file: {e}")
 
 
-process_tex_file()
+# process_tex_file()
 
 # Example usage
-# if __name__ == "__main__":  # Replace with your .tex file path
-#     process_tex_file()
+if __name__ == "__main__":  # Replace with your .tex file path
+    process_tex_file()
 
 
 
